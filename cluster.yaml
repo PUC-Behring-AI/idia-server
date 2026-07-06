@@ -27,7 +27,7 @@
 
 cluster_name: inference-cluster
 min_workers: 0
-max_workers: 4
+max_workers: 1          # Cota AWS: 8 vCPU G / 4 vCPU por g5.xlarge = 2 nós máx. Aumentar junto com a cota.
 idle_timeout_minutes: 5
 
 provider:
@@ -46,11 +46,17 @@ available_node_types:
     # Never holds model weights — a GPU here would be wasted (§7.3).
     node_config:
       InstanceType: m5.large
+      # IAM instance profile pré-criado (ver scripts/create_iam_node_role.sh).
+      # O autoscaler roda AQUI e chama RunInstances/TerminateInstances, então
+      # esta role precisa das permissões de EC2. Sem esta linha, o Ray tenta
+      # criar a role ray-autoscaler-v1 sozinho (exige iam:CreateRole).
+      IamInstanceProfile:
+        Name: ray-cluster-node-profile
       # Security group created by scripts/create_security_groups.sh.
-      # Set SG_ID env var before running deploy_cluster.sh, or the default
-      # VPC security group is used (less restrictive).
+      # ${SG_ID} é substituído por deploy_cluster.sh ANTES do ray up (o Ray
+      # não expande variáveis no YAML — ver rendered_cluster.yaml).
       SecurityGroupIds:
-        - "${SG_ID:-default}"
+        - "${SG_ID}"
     resources:
       CPU: 2
 
@@ -60,16 +66,21 @@ available_node_types:
     # g5.xlarge: 1× A10G 24GB — adequate for 7-8B models (§14.2).
     # For larger models, change InstanceType to g6.12xlarge (4× L4).
     min_workers: 0
-    max_workers: 4
+    max_workers: 1          # Limitado pela cota G (8 vCPU). Subir com a cota ao expandir.
     node_config:
       InstanceType: g5.xlarge
+      IamInstanceProfile:
+        Name: ray-cluster-node-profile
+      # Marcador substituído por deploy_cluster.sh quando --spot (ou USE_SPOT=true).
+      # Sem a flag, esta linha é removida e o worker sobe on-demand.
+##SPOT_MARKET_OPTIONS##
       BlockDeviceMappings:
         - DeviceName: /dev/sda1
           Ebs:
             VolumeSize: 100        # GB — model weights + HuggingFace cache
             VolumeType: gp3
       SecurityGroupIds:
-        - "${SG_ID:-default}"
+        - "${SG_ID}"
     resources: {}                   # Ray auto-detects the NVIDIA GPU
 
 head_node_type: head_node
