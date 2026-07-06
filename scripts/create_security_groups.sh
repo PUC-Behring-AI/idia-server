@@ -71,7 +71,7 @@ if [ "$SG_ID" = "None" ] || [ -z "$SG_ID" ]; then
     SG_ID=$(aws ec2 create-security-group \
         $VPC_FLAG \
         --group-name "$SG_NAME" \
-        --description "IDIA Server — Ray cluster (LiteLLM proxy + Ray dashboard)" \
+        --description "IDIA Server - Ray cluster (LiteLLM proxy + Ray dashboard)" \
         --query "GroupId" \
         --output text)
     info "Created security group: $SG_ID"
@@ -99,7 +99,7 @@ authorize_ingress() {
     fi
 }
 
-authorize_ingress 4000 tcp "$ALLOWED_IP_RANGE" "LiteLLM proxy — OpenAI-compatible API"
+authorize_ingress 4000 tcp "$ALLOWED_IP_RANGE" "LiteLLM proxy - OpenAI-compatible API"
 authorize_ingress 22   tcp "$ALLOWED_SSH_RANGE" "SSH access to Ray head"
 
 # Intra-SG: all traffic between Ray nodes (v2-compatible format)
