@@ -43,12 +43,22 @@ CLUSTER_FILE="$REPO_DIR/cluster.yaml"
 RENDERED_FILE="$REPO_DIR/rendered_config.yaml"
 ENV_FILE="$REPO_DIR/.env"
 
-# ── Help ────────────────────────────────────────────────────────────────────
-
-if [ "${1:-}" = "--help" ]; then
-    sed -n 's/^# //p; s/^#$//p' "$0"
-    exit 0
-fi
+# ── Parse args ──────────────────────────────────────────────────────────────
+# Flags (podem ser combinados):
+#   --dry-run   valida + renderiza, sem subir o cluster
+#   --spot      usa instâncias Spot no gpu_worker (mais barato, cota separada)
+# Também aceita USE_SPOT=true via env var.
+DRY_RUN=false
+USE_SPOT="${USE_SPOT:-false}"
+for arg in "$@"; do
+    case "$arg" in
+        --help)    sed -n 's/^# //p; s/^#$//p' "$0"; exit 0 ;;
+        --dry-run) DRY_RUN=true ;;
+        --spot)    USE_SPOT=true ;;
+        "")        ;;  # ignora arg vazio (compat com chamada antiga)
+        *)         echo "ERROR: flag desconhecida: '$arg' (use --dry-run, --spot, --help)"; exit 1 ;;
+    esac
+done
 
 # ── Pre-flight checks ───────────────────────────────────────────────────────
 
@@ -152,14 +162,55 @@ fi
 python3 "$SCRIPT_DIR/render_config.py" --dry-run > "$RENDERED_FILE"
 echo "  ✓ Created $RENDERED_FILE"
 
+# ── Render cluster.yaml (SG_ID + HF_TOKEN) ──────────────────────────────────
+# Ray does NOT expand ${VAR} in the cluster YAML (feature request ray#29016),
+# so we substitute the values here BEFORE ray up. Without this, RunInstances
+# gets the literal string "${SG_ID}" and fails. rendered_cluster.yaml is
+# gitignored — it contains the resolved HF_TOKEN in plaintext.
+RENDERED_CLUSTER="$REPO_DIR/rendered_cluster.yaml"
+
+: "${SG_ID:?SG_ID não definido — create_security_groups.sh precisa rodar antes}"
+: "${HF_TOKEN:?HF_TOKEN não definido — confira o .env}"
+
+# Bloco Spot: injetado no lugar do marcador ##SPOT_MARKET_OPTIONS## quando
+# --spot (ou USE_SPOT=true). Indentação de 6 espaços = nível do node_config.
+# Vazio = marcador removido → o worker fica on-demand (padrão).
+SPOT_FLAG=0
+if [ "$USE_SPOT" = true ]; then
+    SPOT_FLAG=1
+    echo "  ⚡ Spot habilitado no gpu_worker"
+fi
+
+# awk -v não aceita newline embutido no BSD awk (macOS), então passamos só um
+# flag numérico e mantemos as linhas do bloco literais no programa.
+awk -v spot="$SPOT_FLAG" '
+    /##SPOT_MARKET_OPTIONS##/ {
+        if (spot == 1) {
+            print "      InstanceMarketOptions:"
+            print "        MarketType: spot"
+        }
+        next
+    }
+    { print }
+' "$CLUSTER_FILE" \
+  | sed -e "s|\${SG_ID}|${SG_ID}|g" \
+        -e "s|\${HF_TOKEN}|${HF_TOKEN}|g" \
+  > "$RENDERED_CLUSTER"
+echo "  ✓ Rendered cluster config → $RENDERED_CLUSTER"
+
 # ── Dry-run mode ────────────────────────────────────────────────────────────
 
-if [ "${1:-}" = "--dry-run" ]; then
+if [ "$DRY_RUN" = true ]; then
     echo ""
     echo "=== Dry-run mode — cluster launch skipped ==="
-    echo "Rendered config would be uploaded to /app/rendered_config.yaml:"
+    echo "Rendered serve config (→ /app/rendered_config.yaml):"
     echo "--------------------------------------------------------------"
     cat "$RENDERED_FILE"
+    echo "--------------------------------------------------------------"
+    echo ""
+    echo "Rendered cluster config (HF_TOKEN mascarado):"
+    echo "--------------------------------------------------------------"
+    sed "s|${HF_TOKEN}|<HF_TOKEN>|g" "$RENDERED_CLUSTER"
     echo "--------------------------------------------------------------"
     echo "To launch:  ./scripts/deploy_cluster.sh"
     exit 0
@@ -172,7 +223,7 @@ echo "[2/5] Launching Ray cluster (this takes ~5-10 minutes)..."
 echo "      Head node: m5.large (CPU)"
 echo "      Worker:    g5.xlarge (GPU) × 0-4 (autoscaled)"
 
-ray up -y "$CLUSTER_FILE"
+ray up -y "$RENDERED_CLUSTER"
 
 echo "  ✓ Cluster launched"
 
@@ -181,7 +232,7 @@ echo "  ✓ Cluster launched"
 echo ""
 echo "[3/5] Deploying LLM app..."
 
-ray exec "$CLUSTER_FILE" "serve run /app/rendered_config.yaml"
+ray exec "$RENDERED_CLUSTER" "serve run /app/rendered_config.yaml"
 
 echo "  ✓ LLM app deployed"
 
@@ -190,7 +241,7 @@ echo "  ✓ LLM app deployed"
 echo ""
 echo "[4/5] Running smoke test..."
 
-HEAD_IP=$(ray get-head-ip "$CLUSTER_FILE" 2>/dev/null || true)
+HEAD_IP=$(ray get-head-ip "$RENDERED_CLUSTER" 2>/dev/null || true)
 if [ -n "$HEAD_IP" ]; then
     if [ -x "$SCRIPT_DIR/smoke_test.sh" ]; then
         "$SCRIPT_DIR/smoke_test.sh" "http://${HEAD_IP}:4000" 2>&1 || {
@@ -212,7 +263,7 @@ echo " IDIA Server deployed on AWS"
 echo "=========================================="
 echo ""
 echo "Dashboard (SSH tunnel):"
-echo "  ray dashboard $CLUSTER_FILE"
+echo "  ray dashboard $RENDERED_CLUSTER"
 echo ""
 echo "API endpoint (via head node public IP):"
 if [ "$MULTI_MODEL" = true ]; then
@@ -239,6 +290,6 @@ else
 fi
 echo ""
 echo "To scale down to zero workers:"
-echo "  ray down -y $CLUSTER_FILE"
+echo "  ray down -y $RENDERED_CLUSTER"
 echo ""
 echo "=========================================="

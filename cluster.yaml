@@ -52,6 +52,14 @@ available_node_types:
       # criar a role ray-autoscaler-v1 sozinho (exige iam:CreateRole).
       IamInstanceProfile:
         Name: ray-cluster-node-profile
+      # Disco raiz: a AMI do Ray tem snapshot de 140 GB, então o volume precisa
+      # ser >= 140 GB (senão: "smaller than snapshot"). A imagem Docker GPU
+      # (>10 GB com CUDA) também exige espaço. 150 GB cobre o head com folga.
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 150
+            VolumeType: gp3
       # Security group created by scripts/create_security_groups.sh.
       # ${SG_ID} é substituído por deploy_cluster.sh ANTES do ray up (o Ray
       # não expande variáveis no YAML — ver rendered_cluster.yaml).
@@ -77,7 +85,7 @@ available_node_types:
       BlockDeviceMappings:
         - DeviceName: /dev/sda1
           Ebs:
-            VolumeSize: 100        # GB — model weights + HuggingFace cache
+            VolumeSize: 200        # GB — AMI snapshot exige >=140; +imagem GPU +pesos +HF cache
             VolumeType: gp3
       SecurityGroupIds:
         - "${SG_ID}"

@@ -239,8 +239,7 @@ _deploy_local() {
 # ── Deploy AWS ───────────────────────────────────────────────────────────────
 
 _deploy_aws() {
-    local dry_run="${1:-}"
-
+    # Repassa todos os flags (--dry-run, --spot) para o deploy_cluster.sh.
     _banner "AWS Deploy"
     _load_env
 
@@ -253,11 +252,7 @@ _deploy_aws() {
         exit 1
     fi
 
-    if [ "$dry_run" = "--dry-run" ]; then
-        "$SCRIPTS_DIR/deploy_cluster.sh" --dry-run
-    else
-        "$SCRIPTS_DIR/deploy_cluster.sh"
-    fi
+    "$SCRIPTS_DIR/deploy_cluster.sh" "$@"
 }
 
 # ── Status ───────────────────────────────────────────────────────────────────
@@ -386,7 +381,7 @@ case "${1:-}" in
     deploy)
         case "${2:-}" in
             local) _deploy_local "${3:-}" ;;
-            aws)   _deploy_aws   "${3:-}" ;;
+            aws)   _deploy_aws   "${@:3}" ;;
             *)
                 _error "Unknown deploy target: '${2:-}'"
                 echo "  Use:  ./idia deploy local"
