@@ -31,5 +31,5 @@ applications:
             health_check_timeout_s: 10
             autoscaling_config:
               min_replicas: 0
-              max_replicas: 4
+              max_replicas: 2      # 1 réplica por GPU; alinhado ao max_workers=2 do cluster.yaml.
               target_ongoing_requests: 64
