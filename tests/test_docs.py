@@ -32,7 +32,6 @@ LIVING_DOC_SECTIONS: dict[str, list[str]] = {
     ],
     "docs/DEPLOY.md": [
         "Deploy local",
-        "Deploy na AWS",
         "Gestão de usuários",
         "Troubleshooting",
     ],
@@ -108,7 +107,6 @@ README_PHASE_MARKERS: dict[str, str] = {
     "serve_config.yaml": "Phase 2 ✓",
     "docker-compose.yml": "Phase 2 ✓",
     "config.yaml": "Phase 2 ✓",
-    "cluster.yaml": "Phase 3 ✓",
     "prometheus.yml": "Phase 4 ✓",
 }
 

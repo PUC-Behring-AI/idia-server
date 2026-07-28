@@ -45,7 +45,7 @@ services:
       - MAX_MODEL_LEN=${MAX_MODEL_LEN:-8192}
       - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/-/routes"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/-/routes"]
       interval: 15s
       timeout: 5s
       retries: 10
@@ -83,10 +83,9 @@ services:
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
     healthcheck:
-      # LiteLLM's /health/liveliness is a public endpoint (no auth required).
-      # /health (without suffix) requires authentication when master_key is set.
-      # See LiteLLM PR #27502, docs.architcture.md §4.3.
-      test: ["CMD", "curl", "-f", "http://localhost:4000/health/liveliness"]
+      # Uses python3 urllib — the litellm image does not include curl or wget.
+      # 127.0.0.1 instead of localhost avoids IPv6 resolution issues.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness')"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -141,7 +140,7 @@ services:
   # The ./idia script auto-detects nvidia-smi presence and adds --profile gpu.
   # See docs/ARCHITECTURE.md §5.4 for details.
   dcgm-exporter:
-    image: nvcr.io/nvidia/k8s-dcgm-exporter:3.3.7-3.5.0-ubuntu22.04
+    image: nvidia/dcgm-exporter:3.3.7-3.5.0-ubuntu22.04
     profiles: ["gpu"]
     deploy:
       resources:

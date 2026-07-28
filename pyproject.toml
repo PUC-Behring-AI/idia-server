@@ -11,12 +11,6 @@ dependencies = [
 ]
 dynamic = ["version"]
 
-[project.optional-dependencies]
-test = [
-    "testcontainers-floci>=0.1.0",
-    "boto3>=1.35,<2",
-]
-
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
@@ -26,7 +20,6 @@ markers = [
     "config: configuration file schema validation tests",
     "integration: tests that require Docker/Compose (skip by default)",
     "security: tests that verify security constraints",
-    "aws: AWS integration tests via Floci (requires Docker)",
 ]
 
 [tool.ruff]

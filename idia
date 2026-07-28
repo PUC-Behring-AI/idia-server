@@ -7,15 +7,19 @@
 # for deploying, monitoring, and managing the IDIA Server.
 #
 # Usage:
-#   ./idia deploy local [--dry-run]         Start server locally (Docker Compose)
-#   ./idia deploy aws   [--dry-run]         Deploy on AWS (Ray Cluster Launcher)
-#   ./idia status                           Show service health + loaded models
-#   ./idia user create <name> <tier>        Create a user virtual key
-#   ./idia user list                        List all active virtual keys
-#   ./idia logs [service]                   Show service logs (all or specific)
-#   ./idia stop                             Stop all local services
-#   ./idia cache [--dry-run]                Pre-cache models on S3 (AWS)
-#   ./idia --help                           This message
+#   ./idia setup                          Setup environment (Docker Compose, Python, .env)
+#   ./idia deploy local [--dry-run] [--no-wait]  Start server locally (Docker Compose)
+#                                                --dry-run: validate config only
+#                                                --no-wait: skip health check (for systemd boot)
+#   ./idia service install              Install systemd service (auto-start on boot)
+#   ./idia service uninstall            Remove systemd service
+#   ./idia service status               Show systemd or compose status
+#   ./idia status                       Show service health + loaded models
+#   ./idia user create <name> <tier>    Create a user virtual key
+#   ./idia user list                    List all active virtual keys
+#   ./idia logs [service]               Show service logs (all or specific)
+#   ./idia stop                         Stop all local services
+#   ./idia --help                       This message
 #
 # Tier levels for user create:
 #   hard      15 RPM / 50k TPM  (researchers, heavy users)
@@ -59,20 +63,22 @@ fi
 # ── Help ────────────────────────────────────────────────────────────────────
 
 _help() {
-    sed -n 's/^# //p; /^# =/d; /^#$/d' "$0" | head -40
+    sed -n 's/^# //p; /^# =/d; /^#$/d' "$0" 2>/dev/null || true
     echo ""
     echo "${BOLD}Usage:${RESET}"
     echo "  ./idia <command> [options]"
     echo ""
     echo "${BOLD}Commands:${RESET}"
-    echo "  ${CYAN}deploy local${RESET} [--dry-run]    Start server locally via Docker Compose"
-    echo "  ${CYAN}deploy aws${RESET}   [--dry-run]    Deploy on AWS via Ray Cluster Launcher"
-    echo "  ${CYAN}status${RESET}                     Show service health and loaded models"
+    echo "  ${CYAN}setup${RESET}                             Setup environment (Docker Compose, Python, .env)"
+    echo "  ${CYAN}deploy local${RESET} [--dry-run] [--no-wait]  Start server locally via Docker Compose"
+    echo "  ${CYAN}service install${RESET}               Install systemd service (auto-start on boot)"
+    echo "  ${CYAN}service uninstall${RESET}             Remove systemd service"
+    echo "  ${CYAN}service status${RESET}                Show systemd or compose status"
+    echo "  ${CYAN}status${RESET}                       Show service health and loaded models"
     echo "  ${CYAN}user create${RESET} <name> <tier>  Create a LiteLLM virtual key for a user"
     echo "  ${CYAN}user list${RESET}                  List all active virtual keys"
     echo "  ${CYAN}logs${RESET} [service]             View logs (all services or one)"
     echo "  ${CYAN}stop${RESET}                       Stop all local services"
-    echo "  ${CYAN}cache${RESET} [--dry-run]          Pre-cache models on S3 (AWS deployments)"
     exit 0
 }
 
@@ -170,7 +176,14 @@ _wait_for_health() {
 # ── Deploy local ─────────────────────────────────────────────────────────────
 
 _deploy_local() {
-    local dry_run="${1:-}"
+    local dry_run=""
+    local no_wait=""
+    for arg in "$@"; do
+        case "$arg" in
+            --dry-run) dry_run="--dry-run" ;;
+            --no-wait) no_wait="--no-wait" ;;
+        esac
+    done
 
     _banner "Local Deploy"
     _check_deps
@@ -208,6 +221,17 @@ _deploy_local() {
     docker compose -f "$REPO_DIR/docker-compose.yml" $COMPOSE_PROFILE up -d --build
     _info "Services started"
 
+    if [ "$no_wait" = "--no-wait" ]; then
+        echo ""
+        _info "Services started (--no-wait: containers are booting in background)"
+        echo ""
+        echo "  ${YELLOW}Note:${RESET} model may take 5-15 min to load on first boot."
+        echo "  Check status with:  ./idia status"
+        echo "  View logs with:     ./idia logs"
+        echo ""
+        return 0
+    fi
+
     # Step 4: Wait for LiteLLM health
     if ! _wait_for_health "http://localhost:4000/health" 600; then
         exit 1
@@ -234,25 +258,6 @@ _deploy_local() {
     echo "  ./idia status                       # Check all services"
     echo "  ./idia logs                         # View logs"
     echo ""
-}
-
-# ── Deploy AWS ───────────────────────────────────────────────────────────────
-
-_deploy_aws() {
-    # Repassa todos os flags (--dry-run, --spot) para o deploy_cluster.sh.
-    _banner "AWS Deploy"
-    _load_env
-
-    if ! command -v ray &>/dev/null; then
-        _error "'ray' CLI not found. Install with:  pip install 'ray[default]'"
-        exit 1
-    fi
-    if ! command -v aws &>/dev/null; then
-        _error "'aws' CLI not found. Install from https://aws.amazon.com/cli/"
-        exit 1
-    fi
-
-    "$SCRIPTS_DIR/deploy_cluster.sh" "$@"
 }
 
 # ── Status ───────────────────────────────────────────────────────────────────
@@ -368,24 +373,51 @@ _stop() {
     echo "To remove volumes too:  docker compose down -v"
 }
 
-# ── Cache ────────────────────────────────────────────────────────────────────
+# ── Service (systemd) ─────────────────────────────────────────────────────────
 
-_cache() {
-    _load_env
-    "$SCRIPTS_DIR/cache_models.sh" "$@"
+_service_install() {
+    _banner "Install Systemd Service"
+    if [ "$(id -u)" -ne 0 ]; then
+        _error "This command requires root. Run:  sudo ./idia service install"
+        exit 1
+    fi
+    if ! command -v systemctl &>/dev/null; then
+        _error "systemd not found on this system."
+        exit 1
+    fi
+    "$SCRIPTS_DIR/install_service.sh"
+}
+
+_service_uninstall() {
+    _banner "Uninstall Systemd Service"
+    if [ "$(id -u)" -ne 0 ]; then
+        _error "This command requires root. Run:  sudo ./idia service uninstall"
+        exit 1
+    fi
+    "$SCRIPTS_DIR/uninstall_service.sh"
+}
+
+_service_status() {
+    if command -v systemctl &>/dev/null && systemctl is-enabled --quiet idia-server 2>/dev/null; then
+        systemctl status idia-server --no-pager 2>/dev/null || true
+    else
+        _banner "Status"
+        _load_env
+        docker compose -f "$REPO_DIR/docker-compose.yml" ps 2>/dev/null || \
+            _warn "Could not reach Docker — is the server running?"
+    fi
 }
 
 # ── Router ───────────────────────────────────────────────────────────────────
 
 case "${1:-}" in
+    setup)         "$SCRIPTS_DIR/setup_environment.sh" ;;
     deploy)
         case "${2:-}" in
-            local) _deploy_local "${3:-}" ;;
-            aws)   _deploy_aws   "${@:3}" ;;
+            local) _deploy_local "${@:3}" ;;
             *)
                 _error "Unknown deploy target: '${2:-}'"
                 echo "  Use:  ./idia deploy local"
-                echo "  Or:   ./idia deploy aws"
                 exit 1
                 ;;
         esac
@@ -405,15 +437,30 @@ case "${1:-}" in
         ;;
     logs)          _logs  "${2:-}" ;;
     stop)          _stop ;;
-    cache)         _cache "${@:2}" ;;
-    --help|-h|help) _help ;;
+    service)
+        case "${2:-}" in
+            install)   _service_install ;;
+            uninstall) _service_uninstall ;;
+            status)    _service_status ;;
+            *)
+                _error "Unknown service subcommand: '${2:-}'"
+                echo "  Use:  ./idia service install"
+                echo "  Or:   ./idia service uninstall"
+                echo "  Or:   ./idia service status"
+                exit 1
+                ;;
+        esac
+        ;;
+    --help|-h|help) _help ;; 
     "")
         echo "${BOLD}IDIA Server CLI${RESET} — run ${CYAN}./idia --help${RESET} for usage"
         echo ""
         echo "Quick start:"
-        echo "  ${CYAN}./idia deploy local${RESET}   # Start the server"
-        echo "  ${CYAN}./idia status${RESET}         # Check health"
-        echo "  ${CYAN}./idia user create alice hard${RESET}  # Add a user"
+        echo "  ${CYAN}./idia setup${RESET}                        # Setup environment"
+        echo "  ${CYAN}./idia deploy local${RESET}               # Start the server"
+        echo "  ${CYAN}sudo ./idia service install${RESET}      # Auto-start on boot"
+        echo "  ${CYAN}./idia status${RESET}                    # Check health"
+        echo "  ${CYAN}./idia user create alice hard${RESET}    # Add a user"
         ;;
     *)
         _error "Unknown command: '${1}'"

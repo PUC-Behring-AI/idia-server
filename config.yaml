@@ -41,12 +41,12 @@ litellm_settings:
   # handles auth (e.g., in AWS behind an ALB with auth).
   require_auth_for_metrics_endpoint: false
   default_team_settings:
-    - team_alias: hard
-      rpm_limit: 15                  # ~200 req/dia com peak factor
+    - team_id: hard
+      rpm_limit: 15
       tpm_limit: 50000
-    - team_alias: regular
-      rpm_limit: 4                   # ~50 req/dia
+    - team_id: regular
+      rpm_limit: 4
       tpm_limit: 15000
-    - team_alias: light
-      rpm_limit: 1                   # ~5 req/dia
+    - team_id: light
+      rpm_limit: 1
       tpm_limit: 5000

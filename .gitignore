@@ -38,5 +38,3 @@ Thumbs.db
 # at deploy time and must NOT be committed (they change per deployment).
 rendered_serve_config.yaml
 rendered_litellm_config.yaml
-# Legacy name used by deploy_cluster.sh for AWS pre-render
-rendered_config.yaml

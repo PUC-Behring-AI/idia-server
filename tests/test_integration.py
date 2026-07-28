@@ -631,7 +631,7 @@ class TestRenderLiteLLMConfig:
         })
         parsed = yaml.safe_load(rendered)
         tiers = {
-            t["team_alias"]: t
+            t["team_id"]: t
             for t in parsed["litellm_settings"]["default_team_settings"]
         }
         assert "hard" in tiers,    "Missing 'hard' tier in rendered litellm config"

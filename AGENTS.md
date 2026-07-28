@@ -3,14 +3,14 @@
 # Inherits: ~/.config/opencode/AGENTS.md (global rules)
 # Requires: global >= 2.0
 # Version: 1.4
-# Last updated: 2026-07-01
+# Last updated: 2026-07-28
 
 ## Project
 
 **Name:** IDIA Server (Inference & Deployment for Intelligent Agents)
 **Description:** Self-hosted LLM inference server with automatic GPU elasticity
   and on-demand model loading, deployable identically on a local multi-GPU host
-  and on AWS.
+  and on any GPU host via Docker Compose.
 **Stack:** Python 3.11+, Docker Compose v2, Ray Serve LLM (2.56.0),
   vLLM (0.22.0, bundled by ray[serve,llm]==2.56.0), LiteLLM (1.85.0), Prometheus, Grafana
 **Stack standard:** ~/.config/opencode/standards/python.md
@@ -39,17 +39,15 @@ idia-server/
 ├── pyproject.toml         ← configuração pytest, ruff
 ├── .env.example           ← template de secrets (Phase 2 ✓)
 ├── Dockerfile.ray         ← imagem Ray Serve LLM (Phase 2 ✓)
-├── docker-compose.yml     ← orquestração local / single-EC2 (Phase 2 ✓)
 ├── serve_config.yaml      ← config do Ray Serve — template ${VAR} (Phase 2 ✓)
 ├── config.yaml            ← config LiteLLM — template ${VAR} (Phase 2 ✓)
-├── cluster.yaml           ← definição do cluster AWS (Phase 3 ✓)
 ├── prometheus.yml         ← monitoring scrape config (Phase 4 ✓)
 ├── scripts/               ← utilitários (entrypoint, helpers)
 │   ├── render_config.py   ← renderiza serve_config + litellm_config (Phase 2 ✓)
-│   ├── deploy_cluster.sh  ← deploy automatizado AWS via Ray Cluster Launcher (Phase 3 ✓)
-│   ├── create_security_groups.sh  ← AWS security group creator (Tier 4 ✓)
-│   ├── cache_models.sh    ← Model cache S3 sync (Tier 4 ✓)
+│   ├── setup_environment.sh  ← prepara o ambiente (Docker Compose, Python, .env) (Post-6b ✓)
 │   ├── smoke_test.sh      ← Post-deploy smoke test com --wait (Tier 4 ✓)
+│   ├── install_service.sh  ← systemd unit installer (Post-6b ✓)
+│   ├── uninstall_service.sh ← systemd unit remover (Post-6b ✓)
 │   └── create_user.sh     ← LiteLLM virtual key creator (Tier 4 ✓)
 ├── grafana/               ← dashboards e datasources (Phase 4 ✓)
 │   ├── datasources/       ← provisioning do datasource Prometheus
@@ -65,12 +63,10 @@ idia-server/
 │   ├── test_integration.py ← render_config (serve + litellm), multi-model, VRAM (Phase 2 ✓)
 │   ├── test_security.py    ← portas, pinning, fronteiras de confiança (Phase 2 ✓)
 │   ├── test_contract.py    ← contratos REST LiteLLM sem GPU (Tier 4 ✓)
-│   ├── test_aws_floci.py   ← testes AWS via Floci (Post-5b ✓)
-│   ├── test_aws_scripts.py ← scripts AWS contra Floci (Post-5b ✓)
 │   └── test_deploy_dry_run.py ← validação dry-run deploy (Post-5b ✓)
 ├── docs/
 │   ├── ARCHITECTURE.md    ← documento vivo de arquitetura
-│   ├── DEPLOY.md          ← guia de operações completo (local + AWS) (Phase 5 ✓)
+│   ├── DEPLOY.md          ← guia de operações completo (local) (Phase 5 ✓)
 │   ├── ADR.md             ← Architecture Decision Records (Phase 5 ✓)
 │   ├── audit_logs/        ← relatórios de auditoria vetados
 │   │   ├── 2026-06-28_audit_vettato.md
@@ -85,11 +81,12 @@ idia-server/
 |-------|------|-------------|
 | **1** | Foundation + AGENTS.md + README.md | — | ✅ |
 | **2** | Build Core | Phase 1 | ✅ |
-| **3** | AWS Deployment | Phase 2 | ✅ |
+| **3** | AWS Deployment | Phase 2 | ✅ (removed — local-only simplified) |
 | **4** | Monitoring | Phase 2 | ✅ |
 | **5** | Final Documentation (revision + handoff) | Phases 1–4 | ✅ |
-| **Post-5** | Operational automation (unified CLI, dual render, DEPLOY.md) | Phase 5 | ✅ |
-| **Post-5b** | Floci-based AWS test suite (42 service tests, 11 script tests, 8 dry-run) | Post-5 | ✅ |
+| **Post-5** | Operational automation (unified CLI, dual render, DEPLOY.md) | Post-5 | ✅ |
+| **Post-6** | Local-only simplification | All | ✅ |
+| **Post-6b** | Boot-time startup (systemd integration) | Post-6 | ✅ |
 
 ---
 
@@ -103,7 +100,6 @@ O documento de arquitetura evolui com o código. Estas regras previnem desync:
 - `Dockerfile.ray` — imagem base, dependências, entrypoint
 - `serve_config.yaml` — modelos, autoscaling, engine_kwargs
 - `docker-compose.yml` — serviços, portas, networks, volumes, GPU config
-- `cluster.yaml` — tipos de nó, IAM, limites de autoscaling
 - `config.yaml` — LiteLLM routing, model list, health checks
 - `prometheus.yml` — scrape targets, alert rules
 - Qualquer arquivo em `tests/` que introduza nova categoria de teste (#)
@@ -220,9 +216,9 @@ foi tomada, e qual alternativa foi descartada.
 
 | Critério | Obrigatório? | Exemplo (bom) | Exemplo (ruim) |
 |----------|-------------|---------------|----------------|
-| **Por que** esta mudança existe? | ✅ | "cluster.yaml: pre-render workflow porque serve_config.yaml tem placeholders ${VAR} desde a Fase 2 — Cluster Launcher não suporta env vars nativamente" | "cluster.yaml: fix worker config" |
-| **Qual decisão** foi tomada? | ✅ | "cluster.yaml: g5.xlarge (1× A10G 24GB) — melhor custo-benefício para modelos 7-8B; ver análise em §14.2" | "cluster.yaml: add gpu worker" |
-| **Qual alternativa** foi descartada? | ✅ | "Opção A (env vars via head_setup_commands) descartada porque hardcoda secrets no cluster.yaml" | "cluster.yaml: fix worker type" |
+| **Por que** esta mudança existe? | ✅ | "serve_config.yaml: pre-render workflow porque config tem placeholders ${VAR} desde a Fase 2" | "serve_config.yaml: update config" |
+| **Qual decisão** foi tomada? | ✅ | "Dockerfile.ray: usar imagem rayproject/ray:2.56.0-py311-gpu — bundla vLLM 0.22.0 via ray[serve,llm]" | "Dockerfile: update image" |
+| **Qual alternativa** foi descartada? | ✅ | "Opção A (instalar vllm separado) descartada porque quebra o pinning de versão do ray[serve,llm]" | "Dockerfile: fix deps" |
 | **O que** mudou (diff)? | ✅ (implícito no git) | — | — |
 
 **Na prática:** a mensagem do commit deve conter, em linguagem natural,
@@ -332,7 +328,7 @@ Derivadas da arquitetura. **Não negociáveis.**
 | **`:10001`** (Ray Client) é interna | §9.2 |
 | Todas as imagens **pinnadas a tags imutáveis** — nunca `:latest` | §9.1 |
 | **Duas fronteiras de confiança**: master key (admin) vs. virtual keys (clientes) | §9.1 |
-| TLS termina na borda (ALB/NLB no AWS, reverse proxy local), nunca dentro dos containers | §9.1 |
+| TLS termina na borda (reverse proxy local), nunca dentro dos containers | §9.1 |
 | Ray cluster tratado como banco sem autorização — qualquer path de rede = root | §9.2 |
 | Dashboard bound a `127.0.0.1`, nunca `0.0.0.0` | §9.2 |
 | Ray ≥ 2.54.0 obrigatório (fecha CVE-2026-27482) | §9.2 |
@@ -377,11 +373,11 @@ cada uma com seu marcador e requisitos de infraestrutura.
 | Marcador | Categoria | O que valida | Requer infraestrutura? | Fase |
 |----------|-----------|-------------|----------------------|------|
 | `docs` | Documentação | Estrutura de arquivos obrigatórios, seções de documentos vivos, footer de versão | Não — roda com `pip install pytest` | 1 |
-| `config` | Schema de configuração | Estrutura YAML de `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `cluster.yaml`, `prometheus.yml`, `.env.example`; Grafana datasource provisioning | Não — apenas PyYAML | 1 |
+| `config` | Schema de configuração | Estrutura YAML de `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `prometheus.yml`, `.env.example`; Grafana datasource provisioning | Não — apenas PyYAML | 1 |
 | `integration` | Integração | `render_config.py`: substituição de env vars, validação YAML, dry-run, caminhos de erro; consistência do Compose (build source, pinning, env vars) | Componente unitário: apenas pytest; full suite: Docker + GPU | 2 |
 | `security` | Segurança | Isolamento de portas (`:8000`, `:8265`, `:10001` inacessíveis externamente; apenas `:4000` externa; `:9090` não publicada; `:3000` bound a localhost), pin de imagens (`no :latest`), fronteiras de confiança (master_key declarado), binding do dashboard | Verificação de YAML: apenas pytest; verificação de rede: Docker | 2 |
 | (none) | Contrato LiteLLM | Simulação de API LiteLLM: rejeição de modelo inexistente, auth ausente, mensagens inválidas, formato de resposta | Não — puro Python com mock | 5 (Tier 4) |
-| `aws` | Deploy AWS | Testes de serviços AWS contra emulador Floci local (S3, EC2, IAM); execução de scripts de deploy contra Floci; validação de dry-run e esquema de env vars | Docker (para container Floci) | Post-5b |
+| `deploy` | Dry-run + CLI | Validação de render_config.py, esquema .env, CLI unificada | Não — puro Python + shell | Post-5 |
 
 ### Como executar
 
@@ -431,7 +427,6 @@ Cada classe de teste valida a estrutura de um arquivo de configuração contra a
 | `TestServeConfig` | `serve_config.yaml` | `proxy_location: EveryNode`, `http_options.port: 8000`, `applications` é lista não-vazia |
 | `TestDockerCompose` | `docker-compose.yml` | Serviços `ray-head` e `litellm` presentes; `ipc: host` e `shm_size` em ray-head |
 | `TestLiteLLMConfig` | `config.yaml` | `model_list` e `general_settings` presentes; master_key declarado |
-| `TestClusterYaml` | `cluster.yaml` | `cluster_name`, `provider`, `available_node_types`; head_node é CPU-only; dashboard bound a 127.0.0.1; imagem Docker pinada; gpu_worker min_workers=0; file_mounts mapeia rendered_config |
 | `TestPrometheusConfig` | `prometheus.yml` | `global` e `scrape_configs`; targets apontam para `ray-head:8080` e `litellm:4000`; scrape_interval=15s; sem rule_files (alertas no Grafana) |
 | `TestGrafanaDatasourceConfig` | `grafana/datasources/datasource.yml` | datasource Prometheus configurado como default; url=http://prometheus:9090; access=proxy |
 | `TestEnvExample` | `.env.example` | Declara `HF_TOKEN`, `LITELLM_MASTER_KEY`, `MODEL_ID`, `MODEL_SOURCE` |
@@ -466,9 +461,6 @@ Cada classe de teste valida a estrutura de um arquivo de configuração contra a
 | `TestImagePinning.test_compose_no_latest` | Nenhum serviço no Compose usa `:latest` |
 | `TestTrustBoundaries.test_litellm_config_has_master_key` | config.yaml declara `general_settings.master_key` |
 | `TestDashboardBinding.test_dashboard_host_set_to_localhost` | serve_config.yaml http_options.host=0.0.0.0 (proxy interno)
-| `TestClusterSecurity.test_cluster_dashboard_bound_localhost` | cluster.yaml contém `--dashboard-host=127.0.0.1`
-| `TestClusterSecurity.test_cluster_image_pinned` | cluster.yaml não usa imagem `:latest`
-| `TestClusterSecurity.test_cluster_head_node_cpu_only` | cluster.yaml head node é CPU-only (§7.3)
 | `TestMonitoringPortIsolation.test_prometheus_port_not_published` | Porta 9090 (Prometheus) não está em `ports:` no Compose
 | `TestMonitoringPortIsolation.test_grafana_port_bound_localhost` | Porta 3000 (Grafana) bound a 127.0.0.1
 
@@ -482,7 +474,7 @@ Isso permite que a suíte rode limpa desde a Fase 1.
 
 1. Criar arquivo `tests/test_<area>.py`.
  2. Usar o marcador apropriado: `@pytest.mark.docs`, `@pytest.mark.config`,
-    `@pytest.mark.integration`, `@pytest.mark.security`, `@pytest.mark.aws`.
+    `@pytest.mark.integration`, `@pytest.mark.security`.
 3. Usar as fixtures compartilhadas de `conftest.py` (`repo_root`, `docs_dir`, `config_files`).
 4. Se o teste depende de um arquivo de fase futura, usar `pytest.skip()` se o arquivo não existir.
 5. Registrar o novo marcador em `pyproject.toml` se for nova categoria.

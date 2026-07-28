@@ -96,7 +96,7 @@ The system has two independent autoscaling loops operating at different granular
 | **Scope** | One deployment (one model) | The whole cluster (all nodes) |
 | **Adds/removes** | Replicas (processes) | Nodes (VMs) |
 | **Trigger** | `target_ongoing_requests` exceeded for that deployment | Aggregate resource demand exceeds what current nodes provide |
-| **Where configured** | `autoscaling_config` inside each `LLMConfig` | `min_workers`/`max_workers` in `cluster.yaml` (AWS-only; inert on a fixed local box) |
+| **Where configured** | `autoscaling_config` inside each `LLMConfig` | Not applicable (local-only deployment) |
 | **Answers** | "Do I need another copy of this model running?" | "Do I need another physical GPU machine at all?" |
 
 On a single local multi-GPU host, only the **replica** autoscaler is active — there is no second node to add. On AWS via the Ray Cluster Launcher, **both** operate in sequence: Ray Serve decides it needs another replica → if no GPU slot is free on existing nodes → the cluster autoscaler requests a new EC2 instance to host it. This chained behavior is the mechanism by which added budget converts to added capacity with no manual code changes (§13).
@@ -200,7 +200,7 @@ litellm_settings:
       tpm_limit: 5000
 ```
 
-The `master_key` is validated by `deploy_cluster.sh` (rejects placeholders) and by `render_config.py` (required env var). The `require_auth_for_metrics_endpoint` setting exists because LiteLLM 1.84.0+ changed the default to require authentication on the `/metrics` endpoint (PR #24600), breaking Prometheus scrape targets that do not send a bearer token. This flag restores public access — a safe default because LiteLLM's port 4000 is only reachable within the internal Compose network, not externally.
+The `master_key` is validated by `render_config.py` (required env var). The `require_auth_for_metrics_endpoint` setting exists because LiteLLM 1.84.0+ changed the default to require authentication on the `/metrics` endpoint (PR #24600), breaking Prometheus scrape targets that do not send a bearer token. This flag restores public access — a safe default because LiteLLM's port 4000 is only reachable within the internal Compose network, not externally.
 
 For the full file, see `config.yaml` at the repository root. For client consumption patterns, see §8.
 
@@ -215,7 +215,6 @@ inference-server/
 ├── Dockerfile.ray         # builds the Ray Serve LLM image
 ├── serve_config.yaml      # Ray Serve application config (models, autoscaling)
 ├── docker-compose.yml     # local / single-EC2 orchestration
-├── cluster.yaml           # AWS autoscaling cluster definition (§7.3)
 ├── config.yaml            # LiteLLM model routing
 ├── .env                   # secrets, not committed
 └── prometheus.yml         # monitoring, §10
@@ -547,299 +546,35 @@ curl -X POST http://localhost:4000/chat/completions \
 ### 6.4 Local-specific considerations
 
 - **Adding a GPU**: install the card, confirm with `nvidia-smi` on the host, `docker compose restart ray-head`. No file edit required — Ray re-enumerates devices on restart (§3.3).
+- **Boot-time startup**: install a systemd unit with `sudo ./idia service install`. The unit runs `docker compose up -d` via `./idia deploy local --no-wait` after Docker is ready. Docker's `restart: unless-stopped` handles individual container recovery; systemd ensures the stack comes back after `docker compose down` + reboot.
 - **No node-level autoscaler locally**: the cluster autoscaler (§3.2) never activates on a fixed box; capacity is bounded by the physical GPUs in the machine.
 - **Power/thermal**: sustained inference behaves like sustained training for thermal purposes; verify airflow for multi-hour runs.
 - **Dashboard access**: do not map port 8265 to the host. Use `docker compose exec -it ray-head bash` and curl `localhost:8265` from inside the container, or a temporary `ssh -L` tunnel from a machine on the same private network (§9.2).
 
 ---
 
-## 7. AWS Deployment
+## 7. EC2 Deployment (optional)
 
-### 7.1 Path decision table
-
-| Path | Node-level autoscaling? | Setup effort | Best fit |
-|---|---|---|---|
-| **EC2, single instance, Docker Compose** | No (manual instance resize only) | Lowest | Literal reuse of §5–§6; no elasticity beyond the instance's own GPU count |
-| **Ray Cluster Launcher (`ray up`)** | **Yes** — the cluster autoscaler provisions/terminates EC2 instances directly | Medium | Automatic physical GPU elasticity without Kubernetes — the default for this stack |
-| **KubeRay on EKS** | Yes, via k8s-native scheduling | Highest | Already running Kubernetes, or need multi-team GPU sharing |
-
-### 7.2 EC2 + Compose — single-instance deployment
-
-This path deploys the same stack from §5 and §6 on a single GPU EC2 instance,
-with no node-level autoscaling. It is the lowest-effort AWS option, suitable
-for evaluation, development, or fixed-capacity production workloads.
-
-**Prerequisites (on the EC2 instance):**
-- NVIDIA driver matching the GPU(s) (`nvidia-smi` must work)
-- NVIDIA Container Toolkit (`nvidia-ctk runtime configure --runtime=docker`)
-- Docker Engine with Compose v2 (`docker compose`)
-
-**Deployment steps:**
-
-```bash
-# 1. Launch an EC2 GPU instance (e.g. g5.xlarge, Ubuntu 22.04 or later)
-#    Security group: open inbound TCP 4000 from your IP/network only.
-#    NEVER open 8000, 8265, or 10001.
-
-# 2. SSH into the instance and install prerequisites
-sudo apt-get update
-sudo apt-get install -y nvidia-driver-545-server     # version depends on GPU
-sudo apt-get install -y nvidia-container-toolkit
-sudo nvidia-ctk runtime configure --runtime=docker
-sudo systemctl restart docker
-
-# 3. Copy the project to the instance (rsync recommended)
-rsync -avz --exclude '.git' --exclude '.env' \
-  ./idia-server/ ubuntu@<ec2-ip>:/home/ubuntu/idia-server/
-
-# 4. SSH to the instance and deploy
-ssh ubuntu@<ec2-ip>
-cd ~/idia-server
-cp .env.example .env
-# Edit .env with real values (HF_TOKEN, LITELLM_MASTER_KEY, etc.)
-nano .env
-
-# 5. Start the stack
-docker compose up -d
-
-# 6. Monitor model loading
-docker compose logs -f ray-head
-
-# 7. Verify
-docker compose exec ray-head ray status
-curl -X POST http://localhost:4000/chat/completions \
-  -H "Authorization: Bearer $(grep LITELLM_MASTER_KEY .env | cut -d= -f2)" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"llama-3.1-8b","messages":[{"role":"user","content":"ping"}]}'
-```
-
-**Security group rules:**
-
-| Direction | Protocol | Port | Source | Purpose |
-|-----------|----------|------|--------|---------|
-| Inbound | TCP | 4000 | Your IP / VPN CIDR | LiteLLM API — the only endpoint clients need |
-| Inbound | TCP | 22 | Your IP / VPN CIDR | SSH access (use Session Manager if available) |
-| Outbound | All | All | 0.0.0.0/0 | For HuggingFace downloads, AWS API calls |
-| Inbound | All | 8000, 8265, 10001 | **DENY** | Must never be reachable externally — see §9 |
-
-**Operational notes:**
-- Capacity is bounded by the instance's GPU count. To scale up, stop the
-  instance, change its type (e.g. g5.xlarge → g5.24xlarge), and restart.
-- This path has no node-level autoscaling (§3.2). Add the Cluster Launcher
-  (§7.3) when GPU elasticity is needed.
-- The same `docker-compose.yml` files work here as on a local machine —
-  no changes needed. This is the "implantação idêntica" property.
-
-### 7.3 Ray Cluster Launcher — automatic physical GPU elasticity
-
-This path deploys the IDIA Server across a Ray cluster on EC2, with the
-cluster autoscaler automatically provisioning and terminating GPU instances
-based on demand. It is the recommended production deployment target for
-this stack.
+The same Docker Compose stack from §5 and §6 runs identically on a GPU EC2
+instance. Capacity is bounded by the instance's GPU count — to scale up,
+stop the instance, change its type, and restart. No node-level autoscaling
+is needed for this path.
 
 **Prerequisites:**
-- `ray[default]` installed locally (`pip install "ray[default]"`)
-- AWS credentials configured (`aws configure`)
-- A service-quota increase for the target GPU instance type (e.g. g5.xlarge)
-  in the chosen region
+- NVIDIA driver + NVIDIA Container Toolkit on the EC2 instance
+- Docker Engine with Compose v2
 
-**Configuration file:** `cluster.yaml` at the repository root.
+**Deployment:** Identical to §6.2. Copy the repo, configure `.env`, run
+`docker compose up -d`. The same security rules from §9 apply: only port
+4000 should be reachable from your network.
 
-```yaml
-cluster_name: inference-cluster
-min_workers: 0
-max_workers: 4
-idle_timeout_minutes: 5                 # terminate idle workers after 5 min
-
-provider:
-  type: aws
-  region: us-east-1
-
-docker:
-  image: "rayproject/ray:2.56.0-py311-gpu@sha256:9e0af0a2820745fc567bfb3777f7fd38107a9ce72635c5861e473c24ea4dd150"     # pinned — no :latest; -gpu == -cu121 (CUDA 12.1)
-  container_name: "ray_container"
-  run_options:
-    - "--env HF_TOKEN=${HF_TOKEN}"                 # required for gated models
-
-available_node_types:
-  head_node:
-    # CPU-only — runs Ray control plane, never holds model weights
-    node_config:
-      InstanceType: m5.large
-    resources:
-      CPU: 2
-  gpu_worker:
-    # GPU node — runs inference replicas; autoscaled 0→4
-    min_workers: 0
-    max_workers: 4
-    node_config:
-      InstanceType: g5.xlarge           # 1× A10G 24GB — 7-8B models
-      BlockDeviceMappings:
-        - DeviceName: /dev/sda1
-          Ebs:
-            VolumeSize: 100
-            VolumeType: gp3
-    resources: {}
-
-head_node_type: head_node
-
-file_mounts:
-  "/app/rendered_config.yaml": "./rendered_config.yaml"
-
-head_setup_commands:
-  - pip install --quiet "ray[serve,llm]==2.56.0"
-
-head_start_ray_commands:
-  - ray stop
-  - ray start --head --port=6379 --dashboard-host=127.0.0.1 \
-      --autoscaling-config=~/ray_bootstrap_config.yaml
-```
-
-> **Decision record (2026-06-28):** `serve_config.yaml` contains `${VAR}`
-> placeholders (Phase 2 design). The Cluster Launcher's `file_mounts`
-> copies static files — it does not substitute env vars. Therefore the
-> config must be **pre-rendered** locally before `ray up`. Alternatives
-> considered: (A) setting env vars via `head_setup_commands` was rejected
-> because it would hardcode secrets into `cluster.yaml`; (B) uploading the
-> template and running `render_config.py` on the head node added unnecessary
-> complexity. Pre-rendering is the simplest approach and reuses the Phase 2
-> entrypoint.
-
-Changes from audit remediation (2026-06-28):
-- **`idle_timeout_minutes: 5`:** terminates GPU workers after 5 minutes of
-  inactivity, preventing runaway costs if a replica enters crashloop (STRUCT-08).
-- **`run_options` with `HF_TOKEN`:** injects the HuggingFace token into all
-  Ray containers (workers included), enabling gated model downloads on GPU
-  workers (STRUCT-07). Without this, models like LLaMA-3.1-8B-Instruct fail
-  to download on AWS with `401 Unauthorized`.
-- **`ray[serve,llm]==2.56.0` (no separate vllm pin):** ray 2.56.0 pins `vllm==0.22.0` internally via its own `llm-requirements.txt`. Adding a separate `vllm` pin was incorrect and caused breakage — the bundled version is the tested combination. vLLM 0.22.0 constrains `transformers>=4.56,!=5.0-5.5.0`, keeping it in the 4.x series and avoiding the `AttributeError` in transformers 5.x RoPE standardization. Ray 2.56.0 also fixes `_infer_supports_vision` to use `AutoConfig.from_pretrained()` (PR #62464).
-
-**Deployment workflow:**
-
-```bash
-# 1. Pre-render the config template (resolves ${VAR} from .env)
-python3 scripts/render_config.py --dry-run > rendered_config.yaml
-
-# 2. Launch the cluster
-ray up -y cluster.yaml
-
-# 3. Deploy the LLM app on the cluster
-ray exec cluster.yaml "serve run /app/rendered_config.yaml"
-
-# 4. Open a SSH tunnel to the dashboard (never expose port 8265)
-ray dashboard cluster.yaml
-```
-
-**Automated deployment (wrapper script):**
-
-```bash
-# Validates .env (including multi-model), pre-renders, ensures security groups,
-# runs ray up + ray exec, and runs smoke test in one step
-./scripts/deploy_cluster.sh
-
-# Dry-run mode: validates .env and pre-renders only
-./scripts/deploy_cluster.sh --dry-run
-```
-
-See `scripts/deploy_cluster.sh` for the complete automation script.
-
-**Supporting scripts (added in Tier 4, 2026-06-28):**
-
-| Script | Purpose | When to run |
-|--------|---------|-------------|
-| `scripts/create_security_groups.sh` | Creates/updates AWS security groups for the Ray cluster (ingress: 4000/LiteLLM, 22/SSH, intra-SG all traffic). Idempotent. | Before first `ray up` (included in `deploy_cluster.sh`). |
-| `scripts/cache_models.sh` | Downloads model weights from HuggingFace and uploads to S3 — reduces cold start from ~15 min to ~2 min on AWS. | Before `deploy_cluster.sh` (optional, for faster cold starts). |
-| `scripts/smoke_test.sh` | Verifies each configured model responds correctly via `/chat/completions`. Called by `deploy_cluster.sh` after deployment. | After deployment (included in `deploy_cluster.sh`). |
-| `scripts/create_user.sh` | Creates LiteLLM virtual keys scoped to rate-limit tiers (hard/regular/light). | For every new user. |
-
-**Architecture:**
-
-The head node is CPU-only (`m5.large`): it runs Ray's control plane — GCS,
-dashboard, autoscaler — and never holds model weights, so a GPU on it would
-sit idle. Worker nodes (`gpu_worker`) carry the vLLM replicas and scale from
-zero.
-
-Adding capacity: raise `max_workers` and re-run `ray up -y cluster.yaml`. The
-cluster autoscaler launches additional `g5.xlarge` instances on its own
-whenever the replica autoscaler (§3.2) requests more capacity than current
-nodes provide, and terminates idle ones automatically — `idle_timeout_minutes`
-controls how long an empty node survives before termination.
-
-A service-quota increase for the chosen GPU instance family is a prerequisite;
-the autoscaler cannot provision capacity AWS has not approved for the account.
-
-**Security invariants (from §9):**
-- Dashboard bound to `127.0.0.1` via `--dashboard-host=127.0.0.1` — mandatory
-  mitigation against ShadowRay/CVE-2023-48022.
-- Docker image pinned to `rayproject/ray-ml:2.55.0-py311-gpu` — no `:latest`.
-- Head node is CPU-only — no GPU declared in its `resources` block.
-- Worker nodes use `file_mounts` for configuration, never network-exposed
-  management endpoints.
-
-### 7.4 KubeRay / EKS
-
-Justified by multi-team GPU sharing, an existing Kubernetes investment, or need for the broader operator ecosystem (KubeAI, AIBrix, vLLM Production Stack). For a single-tenant inference server, §7.3 delivers the elasticity property without this layer's operational cost. Industry adoption skews this way only at large-organization scale — the majority of single-cluster deployments do not need it.
-
-### 7.5 Instance reference
+**Instance sizing guide:**
 
 | Instance family | GPU | Typical fit |
 |---|---|---|
-| g6.xlarge / g5.xlarge | 1× L4 / A10G (24GB) | 7–8B models; the worker type used above |
-| g6.12xlarge | 4× L4 | 13B–34B, or several 7–8B replicas per node |
-| p4d.24xlarge | 8× A100 (40GB) | 70B-class with tensor parallelism (sold only as a full 8-GPU node) |
-
-### 7.6 Budget protection
-
-GPU instances cost \$0.50–\$32/hr on demand. Without protection, a stuck
-GPU worker (e.g. replica crashloop, autoscaler failure, OOM loop) can
-accumulate significant cost before detection.
-
-**AWS Budget alert (IaC — AWS CLI):**
-
-```bash
-aws budgets create-budget \
-  --account-id "$(aws sts get-caller-identity --query Account --output text)" \
-  --budget '{
-      "BudgetName": "idia-server-gpu",
-      "BudgetType": "COST",
-      "BudgetLimit": {"Amount": "500", "Unit": "USD"},
-      "CostFilters": {"Service": ["Amazon Elastic Compute Cloud - Compute"]},
-      "TimePeriod": {"StartDate": "2026-01-01", "EndDate": "2027-01-01"},
-      "TimeUnit": "MONTHLY"
-    }' \
-  --notifications-with-subscribers '[
-      {
-        "Notification": {
-          "NotificationType": "ACTUAL",
-          "ComparisonOperator": "GREATER_THAN",
-          "Threshold": 80,
-          "ThresholdType": "PERCENTAGE"
-        },
-        "Subscribers": [{"Address": "admin@instituto.br", "SubscriptionType": "EMAIL"}]
-      },
-      {
-        "Notification": {
-          "NotificationType": "FORECASTED",
-          "ComparisonOperator": "GREATER_THAN",
-          "Threshold": 100,
-          "ThresholdType": "PERCENTAGE"
-        },
-        "Subscribers": [{"Address": "admin@instituto.br", "SubscriptionType": "EMAIL"}]
-      }
-    ]'
-```
-
-**Built-in protections in current config:**
-
-| Protection | Mechanism | Status |
-|-----------|-----------|--------|
-| Scale-to-zero workers | `min_workers: 0` + `idle_timeout_minutes: 5` | ✅ Configured |
-| Replica autoscaling | `min_replicas: 0`, `target_ongoing_requests: 64` | ✅ Configured |
-| Memory limit | `RAY_MEMORY_LIMIT: 16g` prevents unbounded swap | ✅ Configured |
-| Crashloop protection | Ray retries replicas (no max_retries — STRUCT-14 gap) | ⚠️ No hard limit |
-| Budget alert | AWS Budget (see above) — manual setup | ❌ Not automated |
-| Cost anomaly detection | No AWS CloudWatch Anomaly Detection configured | ❌ Future |
-| p5e.48xlarge | 8× H200 (141GB) | Frontier MoE (hundreds of GB of weights); also a full-node-only purchase |
+| g5.xlarge | 1× A10G (24GB) | 7–8B models |
+| g6.12xlarge | 4× L4 (24GB each) | 13–34B, or multiple 7–8B replicas |
+| p4d.24xlarge | 8× A100 (40GB) | 70B-class |
 
 ---
 
@@ -903,7 +638,7 @@ Ray's dashboard and Jobs API were **designed without authentication**, on the ex
 **Mandatory mitigations:**
 
 1. Never map the dashboard port (8265), Client port (10001), or Prometheus port (9090) to a host port, on Compose or on the Cluster Launcher. Verify with `docker compose ps` / `docker port` after every deploy.
-2. Bind the dashboard to `127.0.0.1` (as in §7.3); reach it remotely only via `ray dashboard cluster.yaml` (SSH tunnel) or a reverse proxy with its own authentication.
+2. Bind the dashboard to `127.0.0.1`; reach it remotely only via SSH tunnel or a reverse proxy with its own authentication.
 3. Ray ≥ 2.52.0 ships built-in token authentication — enable it as a second layer, not a replacement for network isolation.
 4. Run Ray ≥ 2.54.0 to close CVE-2026-27482.
 5. Treat the cluster like a database with no query authorization: any network path to it is equivalent to root on every node.
@@ -1029,7 +764,7 @@ open http://localhost:3000
 |---|---|---|
 | KV-cache saturation | `vllm:gpu_cache_usage_perc > 0.95` for 5m | Preemption/recompute imminent |
 | Replica ceiling reached | deployment at `max_replicas` for >10m | The `autoscaling_config` ceiling, not GPU capacity, is the bottleneck — raise it or investigate demand |
-| Cluster at `max_workers` | autoscaler logs show node count pinned at ceiling | On AWS, bounded by `cluster.yaml`, not by absent hardware |
+| Cluster at `max_workers` | autoscaler logs show node count pinned at ceiling | Bounded by physical GPU count on the local host |
 | Cold-start latency spike | p99 TTFT spikes correlated with a scale-up-from-zero event | Expected; distinguish from a genuine regression |
 | Dashboard reachable externally | any external hit on 8265/10001 | Should be impossible per §9.2 — treat as an incident, not a warning |
 
@@ -1089,12 +824,10 @@ artifacts exist.
 | File | Phase | Marker | Key tests |
 |------|-------|--------|-----------|
 | `tests/test_docs.py` | 1 | `docs` | Required file existence, markdown headers, governance sections, version footer |
-| `tests/test_config_schemas.py` | 1, 4 | `config` | YAML schema validation for `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `cluster.yaml`, `prometheus.yml`, `.env.example`; Phase 4: extended Prometheus target validation, Grafana datasource provisioning config |
+| `tests/test_config_schemas.py` | 1, 4 | `config` | YAML schema validation for `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `prometheus.yml`, `.env.example`; Grafana datasource provisioning config |
 | `tests/test_integration.py` | 2 | `integration` | `render_config.py` env var substitution (required/optional), dry-run mode, error paths; Compose consistency (build source, image pinning, env var propagation) |
-| `tests/test_security.py` | 2, 3, 4 | `security` | Port isolation (only 4000 externally accessible), image pinning (no `:latest`), trust boundaries (master key declared), dashboard binding. Phase 3: cluster.yaml security invariants. Phase 4: Prometheus port (9090) not published, Grafana bound to 127.0.0.1 |
-| `tests/test_aws_floci.py` | Post-5b | `aws` | AWS service-level tests via Floci emulator: S3 CRUD (model cache workflow), EC2 Security Group lifecycle (create, authorize, revoke, delete), IAM role management |
-| `tests/test_aws_scripts.py` | Post-5b | `aws` | Run actual deployment scripts (`create_security_groups.sh`, `cache_models.sh --dry-run`, `deploy_cluster.sh` validation) against Floci |
-| `tests/test_deploy_dry_run.py` | 1 | `config` | Dry-run validation: `render_config.py --dry-run`, `.env.example` schema, `./idia` CLI wrapper |
+| `tests/test_security.py` | 2, 4 | `security` | Port isolation (only 4000 externally accessible), image pinning (no `:latest`), trust boundaries (master key declared), dashboard binding. Phase 4: Prometheus port (9090) not published, Grafana bound to 127.0.0.1 |
+| `tests/test_deploy_dry_run.py` | 1 | `config` | Dry-run validation: `render_config.py --dry-run`, `.env.example` schema, `./idia` CLI wrapper, `--no-wait` flag, service/setup subcommands |
 
 | `tests/test_contract.py` | 5 | (none) | LiteLLM API contract tests via mock HTTP server: model not found, missing auth, invalid messages, response format |
 
@@ -1111,12 +844,6 @@ structures without real infrastructure:
   invalid YAML templates) via `--dry-run` flag and direct function calls.
 - `TestComposeConsistency` validates `docker-compose.yml` structure
   (build context, image tags, env var lists) by parsing YAML only.
-- `TestClusterYaml` (Phase 3) validates the `cluster.yaml` structure,
-  including dashboard binding, image pinning, GPU worker scaling config,
-  and file_mounts — all by parsing YAML, no cloud credentials needed.
-- `TestClusterSecurity` (Phase 3) validates `cluster.yaml` invariants
-  from a security perspective: dashboard bound to 127.0.0.1, no `:latest`,
-  CPU-only head node — all by inspecting the YAML file content.
 - `TestPortIsolation` verifies that only port 4000 is accessible externally
   (127.0.0.1:3000 is permitted for Grafana) by inspecting the YAML, not
   by running containers.
@@ -1172,7 +899,7 @@ A fine-tuned variant becomes a second entry in `llm_configs` (or a multiplexed a
 ### 13.1 The two levers
 
 - **More concurrent capacity for a model already running** → raise `max_replicas` in that model's `autoscaling_config` (§4.2). No infrastructure change.
-- **More physical GPU capacity** → locally: install hardware, restart the container (§6.4). On AWS: raise `max_workers` in `cluster.yaml` (§7.3); the cluster autoscaler provisions instances automatically once replica demand exceeds current node capacity.
+- **More physical GPU capacity** → install hardware or upgrade the EC2 instance type, then restart the container (§6.4).
 
 ### 13.2 Scale-to-zero and automatic wake-on-request
 
@@ -1191,15 +918,15 @@ To enable: set `min_replicas: 0` in the deployment's `autoscaling_config`. No ot
 
 ### 13.4 Honest limits
 
-- Capacity is bounded by `max_replicas` per model and `max_workers` per cluster. These are deliberately finite — operator-chosen guardrails against runaway cost, not limitations to remove.
-- AWS instance provisioning has boot lag (minutes). The cluster autoscaler is automatic, not instantaneous, and is distinct from the replica autoscaler, which reacts faster because it reuses already-running nodes when capacity exists.
-- The GPU service-quota prerequisite (§7.3) always applies — the autoscaler cannot provision instance types AWS has not approved for the account.
+- Capacity is bounded by `max_replicas` per model and physical GPU count on the host. These are deliberately finite — operator-chosen guardrails against runaway cost, not limitations to remove.
+- Provisioning additional replicas is bounded by GPU availability on the local host. The replica autoscaler reacts quickly because it reuses already-running containers when spare VRAM exists.
+- On EC2, a service-quota increase for the GPU instance family is required before deploying GPU instances.
 
 ### 13.5 The zero-usage floor cost
 
 Scale-to-zero removes GPU cost while a deployment is idle, but not all cost. Two things persist regardless of traffic:
 
-1. **The head node.** Something must stay listening to receive the first request and trigger a cold start. The head node is not part of the autoscaled `gpu_worker` pool and never scales to zero. It runs only Ray's control plane and holds no model weights, so it is CPU-only (`m5.large` in §7.3) — a GPU there would be wasted on idle coordination.
+1. **The head node.** In local-only deployments, the Ray head runs on the same host as GPU workers — there is no separate head node cost. If deploying to EC2, the instance itself is the single node running both the Ray head and all GPU workers.
 2. **Persisted model storage.** Weights cached on EBS so a cold start reads from local disk instead of re-downloading from HuggingFace on every wake-up. Billed by GB-month whether or not the model is ever loaded.
 
 | Component | Cost driver | Approx. monthly cost |
@@ -1291,7 +1018,7 @@ Implication: scale-to-zero is most valuable at low, sparse utilization — exact
 | First request after deploy hangs for minutes | Expected cold start (§13.2) downloading weights, not a hang | Watch `docker compose logs -f ray-head` for download progress |
 | `prometheus.yml: not a directory` on `up` | File didn't exist before first run; Docker auto-created a directory | `rm -rf prometheus.yml`, create the actual file, retry |
 | Slow under load, no errors | KV-cache thrashing (§10.1) | Check `gpu_cache_usage_perc`/preemptions; lower `max_model_len` or add capacity |
-| Replica count stuck at `max_replicas` | Ceiling reached, not a bug (§10.3) | Raise `max_replicas`, or `max_workers` if the cluster is also full |
+| Replica count stuck at `max_replicas` | Ceiling reached, not a bug (§10.3) | Raise `max_replicas`, or add more physical GPUs if the host is full |
 | External port scanner hits on 8265 | Dashboard leaked to a public interface — active incident, not a slow-fix misconfiguration | Drop the published port immediately, rotate credentials Ray could reach, review §9.2 |
 | `429` from LiteLLM | Virtual key budget/RPM hit | Expected; raise the limit if legitimate, else investigate the caller |
 | LoRA request returns base-model output | Multiplexing config not matching the adapter's declared name | Confirm against current Ray Serve LLM docs (§12.3) — config surface changes between minor versions |
@@ -1314,7 +1041,6 @@ A change in any of the following *requires* an update to this document:
 - `Dockerfile.ray` — base image, dependencies, entrypoint
 - `serve_config.yaml` — models, autoscaling, `engine_kwargs`
 - `docker-compose.yml` — services, ports, networks, volumes, GPU config
-- `cluster.yaml` — node types, IAM, autoscaling limits
 - `config.yaml` — LiteLLM routing, model list, health checks
 - `prometheus.yml` — scrape targets, alert rules
 - Any test file in `tests/` that introduces a new test category (docs, config,
@@ -1385,14 +1111,15 @@ envolve trade-offs significativos entre múltiplas alternativas viáveis.
 - LiteLLM — Docker quickstart, routing/load balancing, health-check routing: https://docs.litellm.ai/docs/proxy/docker_quick_start, https://docs.litellm.ai/docs/proxy/load_balancing, https://docs.litellm.ai/docs/proxy/health_check_routing
 - Fine-tuning framework comparison: https://dev.to/ultraduneai/eval-003-fine-tuning-in-2026-axolotl-vs-unsloth-vs-trl-vs-llama-factory-2ohg
 - AWS — EC2 GPU & general-purpose pricing: https://aws.amazon.com/ec2/pricing/on-demand/, https://aws.amazon.com/ebs/pricing/
-- Kubernetes/AI adoption context (for §7.4): CNCF Annual Cloud Native Survey 2025 (published Jan 2026), https://www.cncf.io/announcements/2026/01/20/kubernetes-established-as-the-de-facto-operating-system-for-ai-as-production-use-hits-82-in-2025-cncf-annual-cloud-native-survey/
 
 | 2026-06-29 | Operational automation — unified CLI, dual config render, UX: (§4.3 LiteLLM config rendering — `rendered_litellm_config.yaml`); (§5.4 Compose: litellm now mounts rendered config; healthcheck start_period 60s→300s; DCGM GPU passthrough devices added); (§5.6 entrypoint: `--render-all` flag; `_render_litellm_config()` + `render_litellm_config()` public API; `_write_rendered_files()`); (§7.3 cluster.yaml: SecurityGroupIds, worker_setup_commands documented); Scripts: smoke_test.sh --wait loop; cache_models.sh syntax fix; deploy_cluster.sh multi-model output + SG_ID export; idia unified CLI; .gitignore: rendered_*.yaml excluded; Tests: TestComposeConsistency + TestRenderLiteLLMConfig (7 new); README v2.0 with sections 12 (users) + 13 (multi-model) | Operational automation review — P1 critical fix (LiteLLM env var substitution not performed natively), P3 (multi-model litellm config), A.3 unified CLI, B.x script fixes |
 | 2026-06-29 | Operations guide — `docs/DEPLOY.md` created (11 sections: prerequisites, local deploy, multi-model, AWS deploy full walkthrough, user management, monitoring, client integration, maintenance, env var reference, troubleshooting); README v2.1 references DEPLOY.md | New living document: docs/DEPLOY.md (operations guide for maintainers and newcomers) |
 | 2026-06-30 | Floci-based AWS test suite — 3 new test modules (test_aws_floci.py, test_aws_scripts.py, test_deploy_dry_run.py); 42 service-level tests (S3 CRUD, EC2 SG lifecycle, IAM role mgmt); 11 script-level tests (run deployment scripts against Floci emulator); 8 dry-run tests (render_config, deploy_cli validation); AGENTS.md Phase Post-5b; ARCHITECTURE.md  expanded  (test coverage table) | Floci integration for offline AWS testing (no real AWS account needed) |
 | 2026-07-01 | Ray 2.55.0 → 2.56.0 migration — root cause: `ray[serve,llm]==2.55.0` had `vllm[audio]>=0.18.0` without upper bound; pip resolved `vllm==0.24.0` which requires `transformers>=5.5.3`; `transformers 5.x` broke `standardize_rope_params` for `LlamaConfig` (`AttributeError: max_position_embeddings`); ray 2.56.0 fixes via PR #62464 (`AutoConfig.from_pretrained`) and pins `vllm==0.22.0` (§5.2 Dockerfile.ray: `ray:2.56.0-py311-gpu@sha256:9e0af…`, no separate vllm pin; §7.3 cluster.yaml: `ray:2.56.0-py311-gpu` replaces deprecated `ray-ml`; §9.1 image policy updated; vllm metrics schema reference updated to 0.22.0) | Bug: `AttributeError: 'PreTrainedConfig' object has no attribute 'max_position_embeddings'` in `_infer_supports_vision` on any Llama model with custom `rope_scaling` |
 | 2026-07-01 | Operational fixes — (§4.3 LiteLLM config synced: removed stale `background_health_checks`/`health_check_interval`/`enable_health_check_routing`, added `max_parallel_requests` and `require_auth_for_metrics_endpoint: false`; LiteLLM healthcheck in compose uses `/health/liveliness` to bypass auth; Grafana dashboard provider path corrected to `/etc/grafana/provisioning/dashboards`) | Prometheus scrape returned 401 (LiteLLM 1.84+ auth-default change), Docker healthcheck of LiteLLM returned 401 (`/health` requires auth when master_key is set), Grafana dashboards not provisioned (wrong path in dashboard.yml) |
+| 2026-07-28 | Simplification — removed AWS deployment (§7 Ray Cluster Launcher/KubeRay/budget protection deleted; kept §7 EC2 + Compose). Deleted cluster.yaml, deploy_cluster.sh, cache_models.sh, create_security_groups.sh, create_iam_node_role.sh, instance-role-policy.json, permission-set-cluster-admin.json, test_aws_floci.py, test_aws_scripts.py. Removed idia CLI deploy aws/cache subcommands. Cleaned pyproject.toml optional deps, tests/conftest.py AWS fixtures, test_config_schemas.py TestClusterYaml, test_security.py TestClusterSecurity, test_docs.py AWS references. DEPLOY.md §5 (Deploy na AWS) removed and sections renumbered. AGENTS.md updated. | Local-only simplification: user only needs Docker Compose; GPU autoscaling works on locally available GPUs; instance upgrade handles more power. |
+| 2026-07-28 | Boot-time startup — (§6.4 systemd service doc); new scripts/install_service.sh and scripts/uninstall_service.sh; idia CLI: service install/uninstall/status subcommands, --no-wait flag for deploy local. Systemd unit uses Type=oneshot + RemainAfterExit=yes to survive docker compose down. DEPLOY.md §3.7 added with persistence caveat. | Host reboot did not guarantee stack recovery — missing systemd integration. |
 
 ---
 
-*Document version: 2.3 | Last updated: 2026-07-01 | Sections changed: 4.3, Structural Change History*
+*Document version: 2.5 | Last updated: 2026-07-28 | Sections changed: 6.4, 7, Structural Change History*

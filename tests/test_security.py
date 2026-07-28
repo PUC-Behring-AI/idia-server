@@ -168,8 +168,7 @@ class TestDashboardBinding:
         """serve_config.yaml does NOT bind Ray dashboard publicly.
 
         This test checks that no configuration exposes the dashboard to
-        0.0.0.0. The actual --dashboard-host=127.0.0.1 flag is set in
-        cluster.yaml (Phase 3) and the compose file omits port 8265.
+        0.0.0.0. The compose file omits port 8265.
         """
         path = repo_root / "serve_config.yaml"
         if not path.exists():
@@ -183,63 +182,6 @@ class TestDashboardBinding:
         assert parsed["http_options"]["host"] == "0.0.0.0", (
             "serve_config proxy binds to 0.0.0.0 inside container (§5.3); "
             "isolation relies on never publishing port 8000 outside (§9.3)"
-        )
-
-
-# ── Phase 3: Cluster Security ───────────────────────────────────────────────
-
-
-@pytest.mark.security
-class TestClusterSecurity:
-    """cluster.yaml respects security invariants (§7.3, §9).
-
-    These tests validate that the Ray Cluster Launcher configuration
-    does not expose the dashboard, uses pinned images, and follows
-    the security constraints from ARCHITECTURE.md §9.
-    """
-
-    PATH = "cluster.yaml"
-
-    def test_cluster_dashboard_bound_localhost(self, repo_root: Path) -> None:
-        """cluster.yaml binds dashboard to 127.0.0.1 in head_start_ray_commands."""
-        path = repo_root / self.PATH
-        if not path.exists():
-            pytest.skip("cluster.yaml not created yet (Phase 3)")
-        content = path.read_text(encoding="utf-8")
-        assert "--dashboard-host=127.0.0.1" in content, (
-            "cluster.yaml must set --dashboard-host=127.0.0.1 in "
-            "head_start_ray_commands (§9.2)"
-        )
-
-    def test_cluster_image_pinned(self, repo_root: Path) -> None:
-        """cluster.yaml docker.image is pinned, not :latest."""
-        path = repo_root / self.PATH
-        if not path.exists():
-            pytest.skip("cluster.yaml not created yet (Phase 3)")
-        content = path.read_text(encoding="utf-8")
-        assert ":latest" not in content, (
-            "cluster.yaml docker.image must not use :latest (§9.1)"
-        )
-        # Verify it has a semver-like tag
-        assert re.search(r":v?\d+\.\d+\.\d+", content), (
-            "cluster.yaml docker.image must be pinned to a specific version"
-        )
-
-    def test_cluster_head_node_cpu_only(self, repo_root: Path) -> None:
-        """cluster.yaml head node InstanceType is not GPU-class."""
-        path = repo_root / self.PATH
-        if not path.exists():
-            pytest.skip("cluster.yaml not created yet (Phase 3)")
-        content = path.read_text(encoding="utf-8")
-        # Check that head node doesn't use g/p instance types
-        # m5.large, t3.medium, c6i.large are all CPU-only
-        parsed = yaml.safe_load(content)
-        nodes = parsed.get("available_node_types", {})
-        head = nodes.get("head_node", {})
-        instance_type = head.get("node_config", {}).get("InstanceType", "")
-        assert not instance_type.startswith(("g", "p", "f")), (
-            f"Head node InstanceType ({instance_type}) appears to have a GPU; "
-            f"head node should be CPU-only per §7.3"
         )
 
 

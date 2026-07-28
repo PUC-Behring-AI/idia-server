@@ -1,14 +1,14 @@
-"""Dry-run validation (Layer 3) tests — no AWS or Floci needed.
+"""Dry-run validation tests — no GPU or Docker needed.
 
-Tests that the deployment scripts validate correctly before any
-AWS operation:
+Tests for:
 - render_config.py --dry-run
-- deploy_cluster.sh validation logic (env vars, placeholders)
 - .env schema parsing
+- ./idia CLI wrapper (subcommands, help, flags)
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -123,8 +123,94 @@ class TestIdiaCli:
             timeout=15,
         )
         # Expected commands in local deploy pipeline
-        expected = {"deploy", "status", "user", "logs", "stop"}
+        expected = {"deploy", "status", "user", "logs", "stop", "service", "setup"}
         for cmd in expected:
             assert cmd in result.stdout.lower(), (
                 f"Expected subcommand '{cmd}' not in help text"
             )
+
+
+@pytest.mark.config
+class TestNoWaitFlag:
+    """--no-wait flag is accepted by deploy local."""
+
+    def test_no_wait_in_help(self, repo_root: Path) -> None:
+        """./idia --help documents --no-wait."""
+        result = subprocess.run(
+            ["bash", str(repo_root / "idia"), "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert "--no-wait" in result.stdout
+
+    def test_no_wait_accepted_in_args(self, repo_root: Path) -> None:
+        """deploy local --no-wait parses the flag without erroring on it."""
+        env_file = repo_root / ".env"
+        env_backup = repo_root / ".env.test_backup"
+        # Temporarily move .env so the command fails early (no real deploy)
+        if env_file.exists():
+            env_file.rename(env_backup)
+        try:
+            result = subprocess.run(
+                ["bash", str(repo_root / "idia"), "deploy", "local", "--no-wait"],
+                capture_output=True, text=True, timeout=15,
+            )
+            # Should fail with a known error, not because --no-wait is unknown
+            output = (result.stderr + result.stdout).lower()
+            assert ".env" in output or "docker" in output
+        finally:
+            if env_backup.exists():
+                env_backup.rename(env_file)
+
+
+@pytest.mark.config
+class TestServiceSubcommand:
+    """./idia service subcommands exist and require root."""
+
+    def test_service_in_help(self, repo_root: Path) -> None:
+        """./idia --help lists service subcommand."""
+        result = subprocess.run(
+            ["bash", str(repo_root / "idia"), "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert "service" in result.stdout.lower()
+
+    def test_service_install_requires_root(self, repo_root: Path) -> None:
+        """service install fails without root."""
+        result = subprocess.run(
+            ["bash", str(repo_root / "idia"), "service", "install"],
+            capture_output=True, text=True, timeout=15,
+            env={"PATH": os.environ.get("PATH", "/usr/bin"), "HOME": os.environ.get("HOME", "/root")},
+        )
+        assert result.returncode != 0
+        assert "root" in result.stderr.lower() or "root" in result.stdout.lower()
+
+    def test_service_unknown_subcommand(self, repo_root: Path) -> None:
+        """Unknown service subcommand gives helpful error."""
+        result = subprocess.run(
+            ["bash", str(repo_root / "idia"), "service", "nosuchthing"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode != 0
+        assert "Unknown service subcommand" in result.stderr
+
+
+@pytest.mark.config
+class TestSetupSubcommand:
+    """./idia setup runs the environment setup script."""
+
+    def test_setup_in_help(self, repo_root: Path) -> None:
+        """./idia --help documents setup."""
+        result = subprocess.run(
+            ["bash", str(repo_root / "idia"), "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert "setup" in result.stdout.lower()
+
+    def test_setup_runs(self, repo_root: Path) -> None:
+        """./idia setup exits 0 on an already-configured machine."""
+        result = subprocess.run(
+            ["bash", str(repo_root / "idia"), "setup"],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode == 0
+        assert "complete" in result.stdout.lower() or "passed" in result.stdout.lower()

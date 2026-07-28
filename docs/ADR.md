@@ -67,7 +67,7 @@ Python no entrypoint (já presente na imagem base `ray-ml`)]
 ---
 
 ## ADR-003: Pre-render workflow para cluster.yaml
-**Data:** 2026-06-28 | **Fase:** 3 | **Status:** Accepted
+**Data:** 2026-06-28 | **Fase:** 3 | **Status:** Superseded (cluster.yaml removed in local-only simplification)
 
 **Contexto:** `serve_config.yaml` usa placeholders `${VAR}` (ADR-002). O
 Ray Cluster Launcher monta arquivos via `file_mounts` como cópia estática
@@ -99,7 +99,7 @@ de deploy), + reuso do entrypoint Phase 2; - passo extra antes de `ray up`
 ---
 
 ## ADR-004: Instância GPU g5.xlarge (1× A10G 24 GB) como worker padrão
-**Data:** 2026-06-28 | **Fase:** 3 | **Status:** Accepted
+**Data:** 2026-06-28 | **Fase:** 3 | **Status:** Superseded (cluster.yaml removed in local-only simplification)
 
 **Contexto:** O cluster.yaml precisa de um tipo de instância GPU para os nós
 worker. Múltiplas famílias atendem: g5 (A10G), g6 (L4), p4d (A100), p5e (H200).

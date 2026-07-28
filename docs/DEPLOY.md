@@ -14,14 +14,20 @@
 1. [Visão geral do fluxo](#1-visão-geral-do-fluxo)
 2. [Pré-requisitos](#2-pré-requisitos)
 3. [Deploy local — servidor no instituto](#3-deploy-local--servidor-no-instituto)
+   - 3.1 Clonar o repositório
+   - 3.2 Configurar variáveis de ambiente
+   - 3.3 Deploy (um único comando)
+   - 3.4 Validar sem subir (dry-run)
+   - 3.5 Verificar saúde dos serviços
+   - 3.6 Enviar a primeira requisição
+   - 3.7 Inicialização automática no boot
 4. [Configuração multi-model](#4-configuração-multi-model)
-5. [Deploy na AWS](#5-deploy-na-aws)
-6. [Gestão de usuários](#6-gestão-de-usuários)
-7. [Monitoramento](#7-monitoramento)
-8. [Integração com clientes](#8-integração-com-clientes)
-9. [Manutenção](#9-manutenção)
-10. [Referência de variáveis de ambiente](#10-referência-de-variáveis-de-ambiente)
-11. [Troubleshooting](#11-troubleshooting)
+5. [Gestão de usuários](#5-gestão-de-usuários)
+6. [Monitoramento](#6-monitoramento)
+7. [Integração com clientes](#7-integração-com-clientes)
+8. [Manutenção](#8-manutenção)
+9. [Referência de variáveis de ambiente](#9-referência-de-variáveis-de-ambiente)
+10. [Troubleshooting](#10-troubleshooting)
 
 ---
 
@@ -31,7 +37,7 @@
 Mantenedor edita .env
         │
         ▼
-./idia deploy local  (ou aws)
+./idia deploy local
         │
         ├─ [1/5] render_config.py --render-all
         │         ├─ rendered_serve_config.yaml   → Ray Serve
@@ -199,7 +205,7 @@ GPU_MEMORY_UTILIZATION=0.9
 # Usado para validação de VRAM em modo multi-model
 GPU_COUNT=1
 
-# VRAM por GPU em GB (default: 24.0 — A10G no g5.xlarge AWS)
+# VRAM por GPU em GB (default: 24.0 — A10G / RTX 3090 / RTX 4090). Ajuste para sua GPU.
 # Para outras GPUs: A100 = 80.0, RTX 3090 = 24.0, V100 = 16.0
 GPU_VRAM_GB=24.0
 
@@ -375,6 +381,52 @@ curl http://localhost:4000/v1/chat/completions \
 
 ---
 
+### 3.7 Inicialização automática no boot
+
+Para garantir que o servidor suba automaticamente quando a máquina ligar,
+instale o serviço systemd:
+
+```bash
+sudo ./idia service install
+```
+
+**O que isso faz:**
+- Cria uma systemd unit em `/etc/systemd/system/idia-server.service`
+- Configura o serviço para iniciar após `docker.service` e `network-online.target`
+- Habilita o serviço para iniciar automaticamente no boot
+- Inicia o servidor imediatamente (equivale a `./idia deploy local --no-wait`)
+
+**Fluxo no boot:**
+1. Sistema liga → systemd inicia o Docker daemon
+2. `idia-server.service` executa `./idia deploy local --no-wait`
+3. Configs são renderizados, containers sobem com `restart: unless-stopped`
+4. LiteLLM fica disponível em `:4000` assim que o modelo carregar
+   (~1-2 min em boots subsequentes com cache; ~15 min no primeiro boot)
+
+**Verificar status:**
+```bash
+./idia service status              # status do serviço (systemd ou compose)
+systemctl status idia-server       # via systemd diretamente
+journalctl -u idia-server -f       # logs do serviço
+./idia status                      # saúde dos containers
+```
+
+**Desinstalar:**
+```bash
+sudo ./idia service uninstall
+```
+
+> ⚠️ **Persistência de virtual keys:** As chaves de usuário do LiteLLM
+> são armazenadas em memória e são **perdidas em todo restart** (boot,
+> crash, `docker compose down`). Após cada reboot:
+> 1. Recrie as chaves com `./idia user create <nome> <tier>` ou
+> 2. Restaure de backup (veja §5.4 "Backup das chaves de usuários").
+>
+> Este é um problema conhecido da versão open-source do LiteLLM.
+> LiteLLM Pro oferece persistência via banco de dados externo.
+
+---
+
 ## 4. Configuração multi-model
 
 O IDIA Server suporta N modelos simultaneamente. Cada modelo roda como um
@@ -465,234 +517,12 @@ curl http://localhost:4000/v1/chat/completions \
 
 ---
 
-## 5. Deploy na AWS
-
-### 5.1 Pré-requisitos AWS
-
-Além dos pré-requisitos locais (seção 2), você precisará de:
-
-**5.1.1 Conta AWS com permissões**
-
-A conta ou role IAM precisa das seguintes permissões mínimas:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "ec2:DescribeInstances", "ec2:RunInstances", "ec2:TerminateInstances",
-        "ec2:StopInstances", "ec2:StartInstances",
-        "ec2:CreateSecurityGroup", "ec2:AuthorizeSecurityGroupIngress",
-        "ec2:DescribeSecurityGroups", "ec2:DescribeKeyPairs",
-        "ec2:DescribeSubnets", "ec2:DescribeVpcs",
-        "ec2:CreateTags", "ec2:DescribeTags",
-        "iam:PassRole", "iam:GetRole"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-**5.1.2 Configurar AWS CLI**
-
-```bash
-pip install awscli
-aws configure
-# AWS Access Key ID: AKIA...
-# AWS Secret Access Key: ...
-# Default region: us-east-1  (ou us-west-2)
-# Default output format: json
-
-# Verificar:
-aws sts get-caller-identity
-# {
-#     "UserId": "AIDA...",
-#     "Account": "123456789012",
-#     "Arn": "arn:aws:iam::123456789012:user/nome-usuario"
-# }
-```
-
-**5.1.3 Par de chaves EC2**
-
-```bash
-# Criar par de chaves (se não tiver):
-aws ec2 create-key-pair --key-name idia-server --query 'KeyMaterial' \
-    --output text > ~/.ssh/idia-server.pem
-chmod 400 ~/.ssh/idia-server.pem
-
-# Se já tiver um par de chaves, ajustar cluster.yaml:
-# auth.ssh_private_key: ~/.ssh/seu-arquivo.pem
-```
-
-**5.1.4 Solicitação de quota GPU**
-
-Instâncias GPU (g5.xlarge) exigem quota específica. Verificar e solicitar:
-
-```bash
-# Verificar quota atual:
-aws service-quotas get-service-quota \
-    --service-code ec2 \
-    --quota-code L-DB2E81BA \
-    --region us-east-1
-# Procurar "Value" — deve ser > 0
-
-# Se quota = 0, solicitar aumento em:
-# https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas
-# Quota: "Running On-Demand G and VT instances"
-# Valor solicitado: 8 (2 instâncias × 4 vCPUs cada)
-# Justificativa: "Research institute LLM serving"
-# Prazo de aprovação: 2-5 dias úteis
-```
-
-**5.1.5 Ray CLI**
-
-```bash
-pip install "ray[default]==2.56.0"
-ray --version  # 2.56.0
-```
-
-### 5.2 Criar Security Group (recomendado)
-
-O Security Group define quem pode acessar a porta 4000 (API) e 22 (SSH).
-
-```bash
-# Configurar faixa de IPs permitidos:
-export ALLOWED_IP_RANGE="200.x.x.0/24"    # IP(s) da rede do instituto
-export ALLOWED_SSH_RANGE="200.x.x.y/32"   # IP fixo do administrador
-export AWS_REGION="us-east-1"
-
-./scripts/create_security_groups.sh
-
-# Saída:
-# [✓] Security group created: sg-0a1b2c3d4e5f6g7h
-# [✓] Ingress rules added: 4000 (ALLOWED_IP_RANGE), 22 (ALLOWED_SSH_RANGE)
-
-# Exportar para o deploy:
-export SG_ID="sg-0a1b2c3d4e5f6g7h"
-```
-
-### 5.3 (Opcional) Pre-cachear modelos no S3
-
-Reduz o cold start de cada GPU worker de ~15 minutos para ~2 minutos.
-
-```bash
-# Criar bucket (uma vez):
-export S3_MODEL_CACHE_BUCKET="idia-models-cache-$(aws sts get-caller-identity \
-    --query Account --output text)"
-aws s3 mb "s3://$S3_MODEL_CACHE_BUCKET" --region "$AWS_REGION"
-
-# Pré-baixar e fazer upload (necessário HF_TOKEN no .env):
-source .env
-./idia cache
-
-# Saída:
-# Downloading meta-llama/Llama-3.1-8B-Instruct from HuggingFace...
-# Uploading to s3://idia-models-cache-123456789012/...
-# [✓] Cache complete — cold start reduced from ~15 min to ~2 min
-```
-
-Depois, editar `cluster.yaml` para descomentar o S3 sync:
-
-```yaml
-# cluster.yaml — descomentar esta seção:
-worker_setup_commands:
-  - aws s3 sync s3://idia-models-cache-123456789012/ /root/.cache/huggingface/ --quiet
-```
-
-### 5.4 Deploy
-
-```bash
-# Configurar .env (mesmo que local):
-cp .env.example .env && vim .env  # preencher todos os campos
-
-# Deploy:
-./idia deploy aws
-```
-
-**O que o `deploy_cluster.sh` faz:**
-
-```
-[1/5] Validando variáveis de ambiente...
-[2/5] Renderizando serve_config.yaml...
-       → rendered_config.yaml
-[3/5] Criando Security Group...
-       → sg-0a1b2c3d4e5f6g7h
-[4/5] Iniciando cluster Ray na AWS...
-       ray up -y cluster.yaml
-       [Cria head node c5.2xlarge + aguarda boot]
-       [Copia rendered_config.yaml via file_mounts]
-[5/5] Deployando modelo...
-       ray exec cluster.yaml "serve run /app/rendered_config.yaml"
-       [GPU worker(s) g5.xlarge sobem automaticamente sob demanda]
-
-[✓] Deploy completo
-    Endpoint: http://54.x.x.x:4000
-```
-
-### 5.5 Post-deploy
-
-```bash
-# Obter IP do head node:
-HEAD_IP=$(ray get-head-ip cluster.yaml)
-echo "API: http://$HEAD_IP:4000"
-
-# Criar usuários no cluster:
-./idia user create alice hard    "http://$HEAD_IP:4000"
-./idia user create bob   regular "http://$HEAD_IP:4000"
-
-# Verificar modelos carregados:
-curl -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-    "http://$HEAD_IP:4000/v1/models" | jq '.data[].id'
-
-# Túnel SSH para dashboards:
-ssh -i ~/.ssh/idia-server.pem -L 3000:127.0.0.1:3000 ubuntu@$HEAD_IP &
-ssh -i ~/.ssh/idia-server.pem -L 8265:127.0.0.1:8265 ubuntu@$HEAD_IP &
-# Grafana:       http://localhost:3000
-# Ray Dashboard: http://localhost:8265
-```
-
-### 5.6 Gerenciar custo AWS
-
-```bash
-# Parar cluster (preserva volumes EBS — cobre cold start de ~2 min no próximo boot):
-ray down cluster.yaml -y
-
-# Smoke test pós-boot:
-./scripts/smoke_test.sh --wait --endpoint "http://$HEAD_IP:4000"
-```
-
-**Estimativa de custo mensal (50 usuários, uso misto):**
-
-| Cenário | Instâncias | Custo/hora | Custo/mês |
-|---------|-----------|-----------|----------|
-| Idle (só head node) | c5.2xlarge | $0.34 | ~$245 |
-| 1 modelo ativo (8h/dia útil) | + g5.xlarge | +$1.01/h | +$160 |
-| 2 modelos ativos (8h/dia útil) | + 2× g5.xlarge | +$2.01/h | +$320 |
-| Scale-to-zero (noite/fim de semana) | — | $0 | — |
-
-> **Proteção de custo:** Configurar um AWS Budget para alertar quando o gasto
-> mensal superar um limite:
-> ```bash
-> aws budgets create-budget \
->   --account-id $(aws sts get-caller-identity --query Account --output text) \
->   --budget '{"BudgetName":"idia-server","BudgetLimit":{"Amount":"500","Unit":"USD"},
->              "TimeUnit":"MONTHLY","BudgetType":"COST"}' \
->   --notifications-with-subscribers '[{"Notification":{"NotificationType":"ACTUAL",
->     "ComparisonOperator":"GREATER_THAN","Threshold":80},
->     "Subscribers":[{"SubscriptionType":"EMAIL","Address":"seu@email.com"}]}]'
-> ```
-
----
-
-## 6. Gestão de usuários
+## 5. Gestão de usuários
 
 O IDIA Server usa o sistema de virtual keys do LiteLLM. Cada usuário recebe
 uma chave única com limites de uso definidos pelo tier.
 
-### 6.1 Tiers disponíveis
+### 5.1 Tiers disponíveis
 
 | Tier | RPM | TPM | Indicado para |
 |------|-----|-----|---------------|
@@ -700,7 +530,7 @@ uma chave única com limites de uso definidos pelo tier.
 | `regular` | 4 | 15 000 | Mestrandos, estudantes de pós-graduação |
 | `light` | 1 | 5 000 | Graduandos, uso ocasional |
 
-### 6.2 Criar usuário
+### 5.2 Criar usuário
 
 ```bash
 ./idia user create <nome> <tier>
@@ -727,7 +557,7 @@ Exemplos:
 > envie ao usuário por canal seguro (e-mail institucional criptografado ou
 > similar).
 
-### 6.3 Listar usuários
+### 5.3 Listar usuários
 
 ```bash
 ./idia user list
@@ -737,7 +567,7 @@ Exemplos:
 #   diana (light) — expires: never
 ```
 
-### 6.4 Revogar acesso
+### 5.4 Revogar acesso
 
 LiteLLM permite revogar chaves via API:
 
@@ -749,7 +579,7 @@ curl -X POST http://localhost:4000/key/delete \
   -d '{"keys": ["sk-idia-user-a1b2c3d4..."]}'
 ```
 
-### 6.5 Criar chave com expiração
+### 5.5 Criar chave com expiração
 
 Para acesso temporário (ex: alunos de um semestre):
 
@@ -775,11 +605,11 @@ curl -X POST http://localhost:4000/key/generate \
 
 ---
 
-## 7. Monitoramento
+## 6. Monitoramento
 
-### 7.1 Grafana (dashboards)
+### 6.1 Grafana (dashboards)
 
-Acessar: **http://localhost:3000** (local) ou via túnel SSH (AWS)
+Acessar: **http://localhost:3000** (local) ou via túnel SSH (remoto)
 
 Credenciais: `admin` / `$GRAFANA_ADMIN_PASSWORD`
 
@@ -794,7 +624,7 @@ O dashboard **vLLM Metrics** (provisionado automaticamente) exibe:
 | GPU Memory Usage | % VRAM | > 95% (risco de OOM) |
 | Running Requests | contagem | > 50 (possível gargalo de throughput) |
 
-### 7.2 Métricas via CLI
+### 6.2 Métricas via CLI
 
 ```bash
 # Ver todas as métricas Ray Serve expostas:
@@ -806,7 +636,7 @@ docker compose exec ray-head curl -s http://localhost:8080/metrics | grep vllm
 # vllm:time_to_first_token_ms   — latência da primeira resposta
 ```
 
-### 7.3 Logs por serviço
+### 6.3 Logs por serviço
 
 ```bash
 ./idia logs               # todos os serviços (Ctrl+C para sair)
@@ -816,7 +646,7 @@ docker compose exec ray-head curl -s http://localhost:8080/metrics | grep vllm
 ./idia logs grafana       # Grafana (dashboards)
 ```
 
-### 7.4 Métricas de uso LiteLLM
+### 6.4 Métricas de uso LiteLLM
 
 ```bash
 # Resumo de uso por chave (últimas 24h):
@@ -826,12 +656,12 @@ curl -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
 
 ---
 
-## 8. Integração com clientes
+## 7. Integração com clientes
 
 O endpoint é compatível com a API OpenAI. Qualquer cliente que suporte
 `base_url` personalizado funciona diretamente.
 
-### 8.1 Python — SDK OpenAI
+### 7.1 Python — SDK OpenAI
 
 ```python
 from openai import OpenAI
@@ -839,7 +669,7 @@ from openai import OpenAI
 # Substituir pelo endpoint real e chave do usuário:
 client = OpenAI(
     base_url="http://localhost:4000/v1",      # local
-    # base_url="http://54.x.x.x:4000/v1",   # AWS
+    # base_url="http://<remote-host>:4000/v1",   # acesso remoto
     api_key="sk-idia-user-a1b2c3d4..."
 )
 
@@ -874,7 +704,7 @@ for chunk in stream:
 print()
 ```
 
-### 8.2 LangChain
+### 7.2 LangChain
 
 ```python
 from langchain_openai import ChatOpenAI
@@ -890,7 +720,7 @@ response = llm.invoke("Qual a diferença entre RNA e DNA?")
 print(response.content)
 ```
 
-### 8.3 OpenCode / agentes de IA
+### 7.3 OpenCode / agentes de IA
 
 Para usar o IDIA Server como provider em OpenCode ou outros agentes,
 configurar como provider OpenAI-compatible:
@@ -909,7 +739,7 @@ configurar como provider OpenAI-compatible:
 }
 ```
 
-### 8.4 curl (scripts de automação)
+### 7.4 curl (scripts de automação)
 
 ```bash
 #!/usr/bin/env bash
@@ -939,9 +769,9 @@ echo "$result"
 
 ---
 
-## 9. Manutenção
+## 8. Manutenção
 
-### 9.1 Trocar o modelo
+### 8.1 Trocar o modelo
 
 ```bash
 # Editar .env:
@@ -955,7 +785,7 @@ MODEL_SOURCE=mistralai/Mistral-7B-Instruct-v0.3
 # Se o novo modelo não estiver em cache, será baixado automaticamente.
 ```
 
-### 9.2 Atualizar o servidor (nova versão do repositório)
+### 8.2 Atualizar o servidor (nova versão do repositório)
 
 ```bash
 git pull origin main
@@ -968,7 +798,7 @@ git pull origin main
 > **Nota:** Se `Dockerfile.ray` foi atualizado, a imagem será reconstruída
 > automaticamente pelo `docker compose up --build`.
 
-### 9.3 Limpar cache de modelos
+### 8.3 Limpar cache de modelos
 
 ```bash
 # Listar volumes:
@@ -981,7 +811,7 @@ docker volume rm idia_hf_cache
 ./idia stop && docker compose down -v
 ```
 
-### 9.4 Backup das chaves de usuários
+### 8.4 Backup das chaves de usuários
 
 As virtual keys do LiteLLM são armazenadas em memória (por padrão). Em caso
 de restart, todas as chaves são perdidas. Para persistência:
@@ -995,7 +825,7 @@ curl -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
 # (LiteLLM Pro suporta banco de dados para persistência — ver docs oficiais)
 ```
 
-### 9.5 Verificar consistência dos configs
+### 8.5 Verificar consistência dos configs
 
 ```bash
 # Rodar a suíte de testes de configuração (não requer GPU, ~5 segundos):
@@ -1007,7 +837,7 @@ pytest tests/ -m "config or docs or security" -v
 
 ---
 
-## 10. Referência de variáveis de ambiente
+## 9. Referência de variáveis de ambiente
 
 | Variável | Obrigatória | Default | Descrição |
 |----------|------------|---------|-----------|
@@ -1031,7 +861,7 @@ pytest tests/ -m "config or docs or security" -v
 
 ---
 
-## 11. Troubleshooting
+## 10. Troubleshooting
 
 ### "model not found" em todas as requisições
 
@@ -1043,6 +873,29 @@ literal, e o LiteLLM tenta rotear para um modelo chamado `"${MODEL_ID}"`.
 ```bash
 ./idia stop
 ./idia deploy local   # pré-renderiza antes de subir
+```
+
+### Servidor não sobe após reboot
+
+**Causa:** Serviço systemd não instalado ou Docker não habilitado no boot.
+
+```bash
+# Verificar se o serviço está enabled:
+systemctl is-enabled docker           # Deve retornar "enabled"
+systemctl is-enabled idia-server      # Deve retornar "enabled"
+
+# Verificar logs do serviço:
+journalctl -u idia-server --since "5 minutes ago"
+```
+
+**Solução:** Se `idia-server` não estiver enabled:
+```bash
+sudo ./idia service install
+```
+
+Se `docker` não estiver enabled:
+```bash
+sudo systemctl enable --now docker
 ```
 
 ### Timeout no step 4/5 (wait loop)
@@ -1096,18 +949,6 @@ curl -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
 
 **Causa:** Rate limit do tier excedido. Aguardar 60 segundos ou usar tier superior.
 
-### GPU worker AWS não sobe
-
-**Causa:** Quota EC2 insuficiente.
-```bash
-# Verificar events do autoscaler:
-ray exec cluster.yaml "cat /tmp/ray/session_latest/logs/monitor*" | tail -50
-# Procurar: "ResourceUnavailableError" ou "InsufficientCapacity"
-```
-
-**Solução:** Solicitar quota em
-https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas
-
 ### Grafana não abre (localhost:3000 recusado)
 
 **Causa:** No deploy local, Grafana está `Up` mas ainda inicializando.
@@ -1116,9 +957,9 @@ docker compose ps grafana        # Checar se está "Up"
 ./idia logs grafana | tail -20   # Ver se há erro de startup
 ```
 
-**Causa AWS:** Grafana não é exposto externamente — usar túnel SSH:
+**Causa:** Grafana não é exposto externamente — usar túnel SSH:
 ```bash
-ssh -i ~/.ssh/idia-server.pem -L 3000:127.0.0.1:3000 ubuntu@$HEAD_IP
+ssh -L 3000:127.0.0.1:3000 user@<host-remoto>
 ```
 
 ### Modelo não aparece no `./idia status` (Loaded models vazio)
@@ -1136,4 +977,4 @@ curl -sf http://localhost:4000/v1/chat/completions \
 
 ---
 
-*Document version: 1.0 | Created: 2026-06-29 | Maintainer: @anaxsouza*
+*Document version: 1.1 | Last updated: 2026-07-28 | Maintainer: @anaxsouza*

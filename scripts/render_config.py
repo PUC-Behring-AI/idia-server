@@ -12,7 +12,7 @@ Workflow:
 
 Flags:
     --dry-run       Render serve_config only to stdout. No files written.
-                    Used by deploy_cluster.sh to pre-render for cluster upload.
+                    No Ray Serve launched. Useful for config validation.
     --render-all    Render BOTH serve_config and litellm_config to repo root.
                     Used by ``./idia deploy local`` before ``docker compose up``.
 
@@ -526,9 +526,9 @@ def _render_litellm_config(env: dict[str, str]) -> str:
             # Opt out so Prometheus can scrape without a bearer token.
             "require_auth_for_metrics_endpoint": False,
             "default_team_settings": [
-                {"team_alias": "hard",    "rpm_limit": 15, "tpm_limit": 50_000},
-                {"team_alias": "regular", "rpm_limit": 4,  "tpm_limit": 15_000},
-                {"team_alias": "light",   "rpm_limit": 1,  "tpm_limit":  5_000},
+                {"team_id": "hard",    "rpm_limit": 15, "tpm_limit": 50_000},
+                {"team_id": "regular", "rpm_limit": 4,  "tpm_limit": 15_000},
+                {"team_id": "light",   "rpm_limit": 1,  "tpm_limit":  5_000},
             ],
         },
     }
@@ -621,7 +621,7 @@ def main() -> None:
 
     Flags:
         --dry-run      Render serve_config to stdout only. No files written,
-                       no Ray Serve launched. Used by deploy_cluster.sh.
+                       no Ray Serve launched. Useful for config validation.
         --render-all   Render BOTH configs (serve + litellm) to repo root.
                        Used by ./idia deploy local before docker compose up.
     """
@@ -641,7 +641,7 @@ def main() -> None:
         print(f"  litellm config → {litellm_out}", file=sys.stderr)
         return
 
-    # ── --dry-run: render serve_config to stdout only (used by deploy_cluster.sh) ──
+    # ── --dry-run: render serve_config to stdout only ──
     if "--dry-run" in sys.argv:
         env = _collect_env()
         raw = _read_file(_find_template(caller_dir))

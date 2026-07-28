@@ -1,8 +1,8 @@
 # IDIA Server — Inference & Deployment for Intelligent Agents
 
 **Servidor de inferência LLM auto-hospedado com elasticidade automática de GPU
-e carregamento sob demanda de modelos, implantável de forma idêntica em um host
-local multi-GPU e na AWS.**
+e carregamento sob demanda de modelos, implantável em qualquer host
+multi-GPU via Docker Compose.**
 
 [![Phase](https://img.shields.io/badge/phase-5%20Complete-brightgreen)](https://github.com/PUC-Behring-Institute-for-AI/idia-server)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
@@ -37,25 +37,23 @@ for AI**. Ele foi projetado para servir modelos de linguagem de grande porte
 (LLMs) para múltiplos usuários e aplicações dentro do instituto, com controle
 individual de orçamento e taxa de requisições, escalonamento automático de
 réplicas (incluindo scale-to-zero para eliminar custo ocioso), e capacidade de
-implantação idêntica em um servidor local multi-GPU e na AWS.
+implantação idêntica em um servidor local multi-GPU e em qualquer instância com GPU via Docker Compose.
 
 ### Propriedades-chave
 
 - **Três camadas bem definidas**: LiteLLM (gateway/auth), Ray Serve LLM
   (orquestração GPU), vLLM (motor de inferência) — cada camada com
   responsabilidades estritas e sem vazamento entre elas.
-- **Elasticidade automática de GPU**: dois autoscalers independentes operam em
-  cascata — o primeiro ajusta réplicas por modelo, o segundo ajusta nós físicos
-  na AWS.
+- **Elasticidade automática de GPU**: o autoscaler de réplicas do Ray Serve ajusta
+  o número de réplicas por modelo conforme a demanda, até o limite de GPUs disponíveis.
 - **Scale-to-zero**: modelos ociosos não ocupam GPU. A primeira requisição após
   um período ocioso dispara o carregamento automático (cold start) sem
   intervenção manual.
 - **Carregamento sob demanda**: múltiplos modelos podem ser declarados com
   `min_replicas: 0`; cada um é carregado apenas quando recebe a primeira
   requisição.
-- **Implantação idêntica local/AWS**: o mesmo `docker-compose.yml` funciona em
-  um laptop com GPU e em uma instância EC2. A diferença está apenas no
-  `cluster.yaml` para elasticidade de nós.
+- **Implantação via Docker Compose**: o mesmo `docker-compose.yml` funciona em
+  qualquer host com GPU — laptop, workstation, ou instância cloud.
 - **Segurança por isolamento de rede**: apenas a porta 4000 (LiteLLM) é exposta
   ao host. As portas internas do Ray (8000, 8265, 10001) nunca são mapeadas no
   `docker-compose.yml`.
@@ -115,11 +113,10 @@ Confundi-los é a fonte mais comum de erro ao raciocinar sobre capacidade e cust
 | **Escopo** | Um deployment (um modelo) | O cluster inteiro (todos os nós) |
 | **Adiciona/remove** | Réplicas (processos) | Nós (VMs) |
 | **Gatilho** | `target_ongoing_requests` excedido para aquele deployment | Demanda agregada de recursos excede o que os nós atuais fornecem |
-| **Onde configurar** | `autoscaling_config` dentro de cada `LLMConfig` | `min_workers`/`max_workers` no `cluster.yaml` |
+| **Onde configurar** | `autoscaling_config` dentro de cada `LLMConfig` |
 | **Ativo localmente?** | Sim | Não (só em cloud) |
 
-Em um host multi-GPU local, apenas o **autoscaler de réplicas** opera. Na AWS
-via Ray Cluster Launcher, ambos operam em sequência: o Ray Serve decide que
+Em um host multi-GPU, o **autoscaler de réplicas** opera automaticamente:
 precisa de mais uma réplica → se nenhum slot GPU estiver livre → o cluster
 autoscaler solicita uma nova instância EC2.
 
@@ -138,7 +135,7 @@ autoscaler solicita uma nova instância EC2.
 7. LiteLLM registra custo/latência contra a chave virtual.
 
 Para a especificação detalhada de cada camada, parâmetros de configuração,
-deploy local e AWS, fine-tuning, custos e troubleshooting, consulte o documento
+deploy local, fine-tuning, custos e troubleshooting, consulte o documento
 completo em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
@@ -157,16 +154,7 @@ completo em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 | GPU NVIDIA | Compute capability ≥ 7.0 (V100 ou mais recente) | `nvidia-smi --query-gpu=name --format=csv,noheader` |
 | Python | 3.11+ | `python --version` |
 
-### 3.2 Para deploy AWS (Phase 3)
-
-| Requisito | Detalhes |
-|-----------|----------|
-| Conta AWS | Com permissão para EC2, IAM, e service quota para GPU instances |
-| `ray[default]` instalado | Para `ray up`, `ray exec`, `ray dashboard` |
-| Credenciais AWS configuradas | `aws configure` ou variáveis de ambiente |
-| Service quota | Solicitar aumento para a família de instância GPU desejada |
-
-### 3.3 Para desenvolvimento e testes
+### 3.2 Para desenvolvimento e testes
 
 | Requisito | Versão | Instalação |
 |-----------|--------|------------|
@@ -183,7 +171,7 @@ completo em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 > renderizados antes de subir os containers.
 >
 > **Guia detalhado:** [`docs/DEPLOY.md`](docs/DEPLOY.md) — cobre pré-requisitos,
-> passo a passo com saída esperada, multi-model, AWS completo, integração com
+> passo a passo com saída esperada, multi-model, integração com
 > clientes (Python, LangChain, OpenCode), e troubleshooting.
 
 ### 4.1 Preparação (uma vez)
@@ -220,6 +208,21 @@ O que acontece automaticamente:
 > **Primeiro boot:** a primeira vez que o servidor sobe, os pesos do modelo são
 > baixados do HuggingFace (~15 min para um modelo 8B). As execuções seguintes
 > usam o cache Docker volume `idia_hf_cache` e sobem em ~1 min.
+
+### 4.2.1 Inicialização automática no boot (opcional)
+
+Para garantir que o servidor suba automaticamente quando a máquina ligar:
+
+```bash
+sudo ./idia service install      # Instala serviço systemd + inicia
+sudo ./idia service uninstall    # Remove (para de iniciar no boot)
+./idia service status            # Verifica status do serviço
+```
+
+Após instalado, o servidor:
+- Sobe automaticamente em todo reboot
+- Se recupera de falhas via `restart: unless-stopped` do Docker
+- ⚠️ Virtual keys são perdidas em todo restart — recrie após reboot (§4.3)
 
 ### 4.3 Criar usuários
 
@@ -263,15 +266,17 @@ for chunk in response:
 ### 4.6 Referência rápida da CLI
 
 ```
-./idia deploy local [--dry-run]   Subir servidor local
-./idia deploy aws   [--dry-run]   Deploy na AWS
-./idia status                     Saúde dos serviços + modelos carregados
-./idia user create <nome> <tier>  Criar chave virtual (hard/regular/light)
-./idia user list                  Listar chaves ativas
-./idia logs [serviço]             Ver logs
-./idia stop                       Parar servidor
-./idia cache                      Pré-cachear modelos no S3 (AWS)
-./idia --help                     Ajuda completa
+./idia setup                                    Configurar ambiente (Docker Compose, Python, .env)
+./idia deploy local [--dry-run] [--no-wait]   Subir servidor local
+./idia service install                         Instalar serviço systemd (auto-start no boot)
+./idia service uninstall                       Remover serviço systemd
+./idia service status                          Status do serviço systemd
+./idia status                                  Saúde dos serviços + modelos carregados
+./idia user create <nome> <tier>               Criar chave virtual (hard/regular/light)
+./idia user list                               Listar chaves ativas
+./idia logs [serviço]                          Ver logs
+./idia stop                                    Parar servidor
+./idia --help                                  Ajuda completa
 ```
 
 ---
@@ -289,13 +294,9 @@ idia-server/
 ├── serve_config.yaml      ← Template Ray Serve com ${VAR} placeholders (Phase 2 ✓)
 ├── config.yaml            ← Template LiteLLM com ${VAR} placeholders (Phase 2 ✓)
 ├── docker-compose.yml     ← Orquestração local (Phase 2 ✓)
-├── cluster.yaml           ← Definição do cluster AWS (Phase 3 ✓)
 ├── prometheus.yml         ← Configuração de scrape (Phase 4 ✓)
 ├── scripts/
 │   ├── render_config.py   ← Renderiza serve_config + litellm_config (Phase 2 ✓)
-│   ├── deploy_cluster.sh  ← Deploy AWS via Ray Cluster Launcher (Phase 3 ✓)
-│   ├── create_security_groups.sh ← IaC para security groups AWS (Tier 4 ✓)
-│   ├── cache_models.sh    ← Cache de modelos no S3 — reduz cold start (Tier 4 ✓)
 │   ├── smoke_test.sh      ← Smoke test pós-deploy com --wait (Tier 4 ✓)
 │   └── create_user.sh     ← Criação de chaves virtuais LiteLLM (Tier 4 ✓)
 ├── grafana/
@@ -312,7 +313,7 @@ idia-server/
 │   └── test_contract.py        ← Contratos REST LiteLLM sem GPU (integration)
 ├── docs/
 │   ├── ARCHITECTURE.md         ← Documento vivo (~1200 linhas)
-│   ├── DEPLOY.md               ← Guia de operações completo (local + AWS)
+│   ├── DEPLOY.md               ← Guia de operações completo (local)
 │   ├── ADR.md                  ← Architecture Decision Records
 │   └── audit_logs/             ← Relatórios de auditoria vetados
 └── README.md                   ← Este arquivo
@@ -334,9 +335,10 @@ humana antes de avançar para a próxima.
 |------|------|--------|-------------|
 | **1** | Fundação | ✅ **Concluída** | `AGENTS.md`, `.gitignore`, `pyproject.toml`, `tests/`, `docs/ARCHITECTURE.md`, `README.md` |
 | **2** | Build Core | ✅ **Concluída** | `Dockerfile.ray`, `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `.env.example`, `render_config.py` |
-| **3** | Deploy AWS | ✅ **Concluída** | `cluster.yaml`, `scripts/deploy_cluster.sh`, guia EC2, testes de segurança |
+| **3** | Deploy AWS | ✅ **Removida** | Substituída pela simplificação local-only — o autoscaler de GPUs locais supre a necessidade |
 | **4** | Monitoramento | ✅ **Concluída** | `prometheus.yml`, Grafana + DCGM exporter, dashboards provisionados |
-| **5** | Documentação + Automação | ✅ **Concluída** | `./idia` CLI, dual render (LiteLLM config), Tier 4 scripts, ADR.md, LICENSE, 109 testes |
+| **5** | Documentação + Automação | ✅ **Concluída** | `./idia` CLI, dual render (LiteLLM config), Tier 4 scripts, ADR.md, LICENSE |
+| **6** | Simplificação local-only | ✅ **Concluída** | Removidos scripts AWS (deploy_cluster, cache, create_sg, create_iam_role), cluster.yaml, testes Floci |
 
 Ao final de cada fase, a suíte de testes é executada para garantir que
 nenhuma regressão foi introduzida.
@@ -352,7 +354,7 @@ A suíte de testes usa **pytest 8.x** com quatro marcadores (**109 testes, 0 fal
 | Marcador | Categoria | O que valida | Requer infra? |
 |----------|-----------|-------------|--------------|
 | `docs` | Documentação | Estrutura de arquivos, seções de docs vivos, ADR, LICENSE | Não |
-| `config` | Schema YAML | Todos os configs: `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `cluster.yaml`, `prometheus.yml`, Grafana | Não |
+| `config` | Schema YAML | Todos os configs: `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `prometheus.yml`, Grafana | Não |
 | `integration` | Integração + Render | `render_config.py` (serve + litellm), VRAM budget, multi-model, contratos LiteLLM | Não (pure Python) |
 | `security` | Segurança | Isolamento de portas, pinning de imagens, fronteiras de confiança, DCGM | Não |
 
@@ -399,7 +401,6 @@ Em `tests/test_config_schemas.py`:
 | `TestServeConfig` | `serve_config.yaml` | `proxy_location: EveryNode`, `http_options.port: 8000`, `applications` é lista não-vazia |
 | `TestDockerCompose` | `docker-compose.yml` | Serviços `ray-head` e `litellm` presentes; `ipc: host` e `shm_size` em ray-head |
 | `TestLiteLLMConfig` | `config.yaml` | `model_list` e `general_settings` presentes; master_key declarado |
-| `TestClusterYaml` | `cluster.yaml` | `cluster_name`, `provider`, `available_node_types`; head_node é CPU-only; dashboard bound a `127.0.0.1`; imagem pinada; pre-render workflow |
 | `TestPrometheusConfig` | `prometheus.yml` | `global` e `scrape_configs`; targets apontam para `ray-head:8080` e `litellm:4000` |
 | `TestEnvExample` | `.env.example` | Declara `HF_TOKEN`, `LITELLM_MASTER_KEY`, `MODEL_ID`, `MODEL_SOURCE` |
 
@@ -482,7 +483,7 @@ explorado (campanhas ShadowRay desde 2023, ShadowRay 2.0 em 2026).
 **Mitigações obrigatórias (aplicadas na arquitetura):**
 
 1. A porta 8265 (dashboard) nunca é mapeada no `docker-compose.yml`.
-2. O dashboard é bound a `127.0.0.1` no cluster.yaml (`--dashboard-host=127.0.0.1`).
+2. O dashboard é bound a `127.0.0.1` via `--dashboard-host=127.0.0.1`.
 3. Ray ≥ 2.54.0 é obrigatório (fecha CVE-2026-27482).
 4. O ingress do Ray Serve (8000) nunca é exposto — só o LiteLLM (4000) é
    acessível.
@@ -496,17 +497,14 @@ Para a especificação completa de segurança, consulte
 
 ## 10. Targets de Deploy
 
-A arquitetura suporta três targets de deploy com esforço crescente:
+O IDIA Server suporta um modelo de deploy simples:
 
-| Target | Elasticidade GPU | Esforço de setup | Documentação |
-|--------|-----------------|-------------------|-------------|
-| **Local (Docker Compose)** | Não (limitado às GPUs físicas da máquina) | Mínimo | [`ARCHITECTURE.md §6`](docs/ARCHITECTURE.md#6-local-deployment) |
-| **AWS EC2 (Docker Compose)** | Não (redimensionamento manual da instância) | Baixo | [`ARCHITECTURE.md §7.2`](docs/ARCHITECTURE.md#72-ec2--compose) |
-| **AWS Ray Cluster Launcher** | **Sim** — o cluster autoscaler provisiona/termina instâncias EC2 automaticamente | Médio | [`ARCHITECTURE.md §7.3`](docs/ARCHITECTURE.md#73-ray-cluster-launcher--automatic-physical-gpu-elasticity) |
+| Target | Elasticidade GPU | Documentação |
+|--------|-----------------|-------------|
+| **Local (Docker Compose)** | O autoscaler de réplicas do Ray Serve ajusta automaticamente ao número de GPUs disponíveis na máquina | [ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-local-deployment) |
+| **Instância Cloud** | Mesmo stack Docker Compose — para mais potência, troque o tipo da instância | [ARCHITECTURE.md §7](docs/ARCHITECTURE.md#7-ec2-deployment-optional) |
 
-O cliente sempre endereça a porta `:4000` — o host por trás dela (laptop,
-instância EC2 única, ou cluster autoscaling) é invisível para o cliente. Esta é
-a propriedade que torna o deploy local e cloud idênticos do lado do consumidor.
+O cliente sempre endereça a porta `:4000` — o host por trás dela é invisível para o cliente.
 
 ---
 
@@ -672,8 +670,6 @@ instituições de pesquisa brasileiras.
 | Ray Serve LLM — Arquitetura | https://docs.ray.io/en/latest/serve/llm/architecture/overview.html |
 | Ray Serve LLM — Serving guide | https://docs.ray.io/en/latest/serve/llm/index.html |
 | Ray — KubeRay LLM example | https://docs.ray.io/en/latest/cluster/kubernetes/examples/rayserve-llm-example.html |
-| Ray — Cluster YAML / AWS autoscaler | https://docs.ray.io/en/latest/cluster/vms/references/ray-cluster-configuration.html |
-| Ray — Cluster config example | https://github.com/ray-project/ray/blob/master/python/ray/autoscaler/aws/example-full.yaml |
 | Ray — Security guide | https://docs.ray.io/en/latest/ray-security/index.html |
 | ShadowRay / CVE-2023-48022 | https://www.oligo.security/blog/shadowray-attack-ai-workloads-actively-exploited-in-the-wild |
 | ShadowRay 2.0 (2026) | https://www.penligent.ai/hackinglabs/the-zombie-vulnerability-a-2026-autopsy-of-cve-2023-48022-and-the-shadowray-2-0-resurgence/ |
@@ -681,11 +677,9 @@ instituições de pesquisa brasileiras.
 | LiteLLM — Docker quickstart | https://docs.litellm.ai/docs/proxy/docker_quick_start |
 | LiteLLM — Load balancing | https://docs.litellm.ai/docs/proxy/load_balancing |
 | LiteLLM — Health check routing | https://docs.litellm.ai/docs/proxy/health_check_routing |
-| AWS — EC2 GPU pricing | https://aws.amazon.com/ec2/pricing/on-demand/ |
-| AWS — EBS pricing | https://aws.amazon.com/ebs/pricing/ |
 | Fine-tuning comparison (2026) | https://dev.to/ultraduneai/eval-003-fine-tuning-in-2026-axolotl-vs-unsloth-vs-trl-vs-llama-factory-2ohg |
 | CNCF Survey 2025 | https://www.cncf.io/announcements/2026/01/20/kubernetes-established-as-the-de-facto-operating-system-for-ai-as-production-use-hits-82-in-2025-cncf-annual-cloud-native-survey/ |
 
 ---
 
-*README version: 2.1 | Last updated: 2026-06-29 | Maintainer: @anaxsouza*
+*README version: 2.3 | Last updated: 2026-07-28 | Maintainer: @anaxsouza*
