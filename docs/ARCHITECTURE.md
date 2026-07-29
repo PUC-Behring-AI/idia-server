@@ -141,8 +141,8 @@ from ray import serve
 
 llm_config = LLMConfig(
     model_loading_config=ModelLoadingConfig(
-        model_id="llama-3.1-8b",                          # alias clients/LiteLLM use
-        model_source="meta-llama/Llama-3.1-8B-Instruct",
+        model_id="mistral-7b",                          # alias clients/LiteLLM use
+        model_source="mistralai/Mistral-7B-Instruct-v0.3",
     ),
     engine_kwargs=dict(
         dtype="bfloat16",
@@ -176,9 +176,9 @@ The configuration is maintained in `config.yaml` at the repository root, rendere
 
 ```yaml
 model_list:
-  - model_name: llama-3.1-8b
+  - model_name: mistral-7b
     litellm_params:
-      model: openai/llama-3.1-8b        # must match model_id in ModelLoadingConfig
+      model: openai/mistral-7b        # must match model_id in ModelLoadingConfig
       api_base: http://ray-head:8000/v1 # Ray Serve's ingress, internal network only
       api_key: "no-auth-internal"       # Ray's ingress has no per-request key by default — see §9.3
 
@@ -417,8 +417,8 @@ Only `.env` (without `.example`) contains secrets and is never committed.
 ```
 HF_TOKEN=hf_xxx
 LITELLM_MASTER_KEY=sk-litellm-admin-change-me
-MODEL_ID=llama-3.1-8b
-MODEL_SOURCE=meta-llama/Llama-3.1-8B-Instruct
+MODEL_ID=mistral-7b
+MODEL_SOURCE=mistralai/Mistral-7B-Instruct-v0.3
 MAX_MODEL_LEN=8192          # optional — see defaults below
 GPU_MEMORY_UTILIZATION=0.9  # optional — see defaults below
 GRAFANA_ADMIN_PASSWORD=      # required if Grafana is enabled (see §5.4)
@@ -540,7 +540,7 @@ docker compose exec ray-head ray status
 curl -X POST http://localhost:4000/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"llama-3.1-8b","messages":[{"role":"user","content":"ping"}]}'
+  -d '{"model":"mistral-7b","messages":[{"role":"user","content":"ping"}]}'
 ```
 
 ### 6.4 Local-specific considerations
@@ -598,7 +598,7 @@ Consume via the OpenAI SDK — no vLLM-, Ray-, or LiteLLM-specific code:
 from openai import OpenAI
 client = OpenAI(base_url="http://<host>:4000", api_key="sk-12...")
 resp = client.chat.completions.create(
-    model="llama-3.1-8b",          # = model_name in config.yaml
+    model="mistral-7b",          # = model_name in config.yaml
     messages=[{"role": "user", "content": "Explain PagedAttention in one sentence."}],
     stream=True,
 )

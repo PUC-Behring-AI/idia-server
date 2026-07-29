@@ -17,12 +17,13 @@ FROM rayproject/ray:2.56.0-py311-gpu@sha256:9e0af0a2820745fc567bfb3777f7fd38107a
 # conflict and override the tested combination.
 RUN pip install --no-cache-dir "ray[serve,llm]==2.56.0"
 
-# curl needed for docker compose healthcheck (CMD vs HEALTHCHECK uses the
-# container's own toolchain). wget is present in the base image but we install
-# curl explicitly for compatibility across image versions.
+# curl needed for docker compose healthcheck. Base image uses USER ray, so
+# we must switch to root for apt-get then restore the default user.
+USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
+USER ray
 
 WORKDIR /app
 

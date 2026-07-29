@@ -135,7 +135,7 @@ token de acesso). Para obter o token:
 2. Ir em https://huggingface.co/settings/tokens
 3. Clicar em **New token** → tipo **Read** → copiar o token (`hf_...`)
 4. Para modelos Llama (Meta): ir em
-   https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct e clicar em
+   https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3 e clicar em
    **Request access** (aprovação automática em minutos)
 
 ### 2.5 Verificação final
@@ -183,11 +183,11 @@ LITELLM_MASTER_KEY=sk-idia-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
 
 # Nome curto do modelo — é o que os clientes usarão no campo "model"
 # Ex: "llama-3.1-8b", "mistral-7b", "qwen-2.5-14b"
-MODEL_ID=llama-3.1-8b
+MODEL_ID=mistral-7b
 
 # ID completo no HuggingFace Hub — usado para baixar os pesos
-# Ex: "meta-llama/Llama-3.1-8B-Instruct", "mistralai/Mistral-7B-Instruct-v0.3"
-MODEL_SOURCE=meta-llama/Llama-3.1-8B-Instruct
+# Ex: "mistralai/Mistral-7B-Instruct-v0.3", "mistralai/Mistral-7B-Instruct-v0.3"
+MODEL_SOURCE=mistralai/Mistral-7B-Instruct-v0.3
 
 # ──────────────────────────────────────────────────────────────
 # OPCIONAIS — os defaults são adequados para a maioria dos casos
@@ -302,8 +302,8 @@ model_list:
 - litellm_params:
     api_base: http://ray-head:8000/v1
     api_key: no-auth-internal
-    model: openai/llama-3.1-8b       # ← valor real, não placeholder
-  model_name: llama-3.1-8b           # ← valor real
+    model: openai/mistral-7b       # ← valor real, não placeholder
+  model_name: mistral-7b           # ← valor real
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   max_parallel_requests: 20
@@ -333,7 +333,7 @@ LiteLLM health:
 [✓] LiteLLM is healthy
 
 Loaded models:
-  • llama-3.1-8b
+  • mistral-7b
 
 GPU status:
   GPU: NVIDIA A10G | VRAM: 14352 MiB / 24576 MiB | Util: 0 %
@@ -347,7 +347,7 @@ curl http://localhost:4000/v1/chat/completions \
   -H "Authorization: Bearer sk-idia-a1b2c3d4..." \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "llama-3.1-8b",
+    "model": "mistral-7b",
     "messages": [
       {"role": "user", "content": "Em uma frase, o que é inteligência artificial?"}
     ],
@@ -362,7 +362,7 @@ curl http://localhost:4000/v1/chat/completions \
 {
   "id": "chatcmpl-abc123",
   "object": "chat.completion",
-  "model": "llama-3.1-8b",
+  "model": "mistral-7b",
   "choices": [{
     "index": 0,
     "message": {
@@ -459,14 +459,14 @@ Tamanhos estimados (FP16, sem quantização):
 
 ```bash
 # Comentar ou remover as variáveis de single-model:
-# MODEL_ID=llama-3.1-8b
-# MODEL_SOURCE=meta-llama/Llama-3.1-8B-Instruct
+# MODEL_ID=mistral-7b
+# MODEL_SOURCE=mistralai/Mistral-7B-Instruct-v0.3
 
 # Habilitar modo multi-model:
 MODELS_COUNT=2
 
-MODEL_1_ID=llama-3.1-8b
-MODEL_1_SOURCE=meta-llama/Llama-3.1-8B-Instruct
+MODEL_1_ID=mistral-7b
+MODEL_1_SOURCE=mistralai/Mistral-7B-Instruct-v0.3
 
 MODEL_2_ID=qwen-2.5-7b
 MODEL_2_SOURCE=Qwen/Qwen2.5-7B-Instruct
@@ -502,13 +502,13 @@ FATAL: VRAM budget exceeded.
 ./idia status
 # Deve mostrar:
 #   Loaded models:
-#     • llama-3.1-8b
+#     • mistral-7b
 #     • qwen-2.5-7b
 
 # Testar ambos:
 curl http://localhost:4000/v1/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-  -d '{"model": "llama-3.1-8b", "messages": [{"role":"user","content":"ping"}]}'
+  -d '{"model": "mistral-7b", "messages": [{"role":"user","content":"ping"}]}'
 
 curl http://localhost:4000/v1/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
@@ -544,7 +544,7 @@ Exemplos:
 #   "key": "sk-idia-user-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
 #   "key_alias": "alice",
 #   "team_id": "hard",
-#   "models": ["llama-3.1-8b"],
+#   "models": ["mistral-7b"],
 #   "expires": null
 # }
 
@@ -599,7 +599,7 @@ curl -X POST http://localhost:4000/key/generate \
     \"key_alias\": \"estudante-turma-2026\",
     \"team_id\": \"light\",
     \"expires\": \"$EXPIRES\",
-    \"models\": [\"llama-3.1-8b\"]
+    \"models\": [\"mistral-7b\"]
   }"
 ```
 
@@ -675,7 +675,7 @@ client = OpenAI(
 
 # Chat completion:
 response = client.chat.completions.create(
-    model="llama-3.1-8b",
+    model="mistral-7b",
     messages=[
         {"role": "system", "content": "Você é um assistente de pesquisa especializado em biologia molecular."},
         {"role": "user", "content": "Explique o mecanismo de CRISPR-Cas9."}
@@ -693,7 +693,7 @@ print(f"Tokens usados: {response.usage.total_tokens}")
 
 ```python
 stream = client.chat.completions.create(
-    model="llama-3.1-8b",
+    model="mistral-7b",
     messages=[{"role": "user", "content": "Escreva um resumo sobre RNA mensageiro."}],
     stream=True
 )
@@ -712,7 +712,7 @@ from langchain_openai import ChatOpenAI
 llm = ChatOpenAI(
     base_url="http://localhost:4000/v1",
     api_key="sk-idia-user-...",
-    model="llama-3.1-8b",
+    model="mistral-7b",
     temperature=0.7
 )
 
@@ -735,7 +735,7 @@ configurar como provider OpenAI-compatible:
       "name": "IDIA Server (local)"
     }
   },
-  "model": "idia/llama-3.1-8b"
+  "model": "idia/mistral-7b"
 }
 ```
 
@@ -747,7 +747,7 @@ configurar como provider OpenAI-compatible:
 
 IDIA_ENDPOINT="http://localhost:4000"
 IDIA_KEY="sk-idia-user-..."
-MODEL="llama-3.1-8b"
+MODEL="mistral-7b"
 
 query_llm() {
     local prompt="$1"
@@ -906,13 +906,18 @@ sudo systemctl enable --now docker
 ./idia logs ray-head | grep -E "Downloading|Loading|model"
 ```
 
-**Causa B:** `HF_TOKEN` inválido ou modelo gated sem acesso aprovado.
+**Causa B:** `HF_TOKEN` inválido.
+
+> 💡 O modelo padrão (`mistralai/Mistral-7B-Instruct-v0.3`) é **não-gated** —
+> não precisa aceitar termos. Se você estiver usando um modelo gated
+> (ex: `meta-llama/Llama-3.1-8B-Instruct`), aceite os termos no site do
+> HuggingFace e gere um novo token.
+
 ```bash
 # Testar token diretamente:
 curl -H "Authorization: Bearer $HF_TOKEN" \
-    "https://huggingface.co/api/models/meta-llama/Llama-3.1-8B-Instruct"
+    "https://huggingface.co/api/models/mistralai/Mistral-7B-Instruct-v0.3"
 # Se retornar 401, o token está inválido.
-# Se retornar 403, aceitar os termos em: https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct
 ```
 
 **Causa C:** VRAM insuficiente — vLLM falha com OOM e Ray entra em crashloop.
@@ -971,7 +976,7 @@ primeira requisição.
 ```bash
 curl -sf http://localhost:4000/v1/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-  -d '{"model":"llama-3.1-8b","messages":[{"role":"user","content":"ping"}]}'
+  -d '{"model":"mistral-7b","messages":[{"role":"user","content":"ping"}]}'
 # Primeira resposta pode demorar 30-90s (cold start do Ray replica)
 ```
 

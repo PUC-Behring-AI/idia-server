@@ -18,9 +18,9 @@
 # For a completely static multi-model setup, add entries manually below.
 
 model_list:
-  - model_name: ${MODEL_ID:-llama-3.1-8b}
+  - model_name: ${MODEL_ID:-mistral-7b}
     litellm_params:
-      model: openai/${MODEL_ID:-llama-3.1-8b}
+      model: openai/${MODEL_ID:-mistral-7b}
       api_base: http://ray-head:8000/v1
       api_key: "no-auth-internal"
     # Ray Serve ingress (:8000) is internal-only — no API key required.

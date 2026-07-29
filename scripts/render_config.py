@@ -17,8 +17,8 @@ Flags:
                     Used by ``./idia deploy local`` before ``docker compose up``.
 
 Required env vars:
-    MODEL_ID          — Short model alias (e.g. "llama-3.1-8b")
-    MODEL_SOURCE      — HuggingFace Hub identifier (e.g. "meta-llama/Llama-3.1-8B-Instruct")
+    MODEL_ID          — Short model alias (e.g. "mistral-7b")
+    MODEL_SOURCE      — HuggingFace Hub identifier (e.g. "mistralai/Mistral-7B-Instruct-v0.3")
 
 Optional env vars (with defaults):
     MAX_MODEL_LEN           = 8192

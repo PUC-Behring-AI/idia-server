@@ -186,8 +186,8 @@ cp .env.example .env
 # Editar .env com os seus valores:
 #   HF_TOKEN         — token HuggingFace (https://huggingface.co/settings/tokens)
 #   LITELLM_MASTER_KEY — chave admin (ex: sk-admin-minha-chave-secreta)
-#   MODEL_ID         — alias curto (ex: llama-3.1-8b)
-#   MODEL_SOURCE     — repositório HF (ex: meta-llama/Llama-3.1-8B-Instruct)
+#   MODEL_ID         — alias curto (ex: mistral-7b)
+#   MODEL_SOURCE     — repositório HF (ex: mistralai/Mistral-7B-Instruct-v0.3)
 #   GRAFANA_ADMIN_PASSWORD — senha do Grafana
 vim .env
 ```
@@ -254,7 +254,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="llama-3.1-8b",
+    model="mistral-7b",
     messages=[{"role": "user", "content": "O que é continuous batching?"}],
     stream=True,
 )
@@ -414,8 +414,8 @@ Em `tests/test_config_schemas.py`:
 |----------|---------|-----------|
 | `HF_TOKEN` | `hf_xxx...` | Token HuggingFace para download de modelos |
 | `LITELLM_MASTER_KEY` | `sk-admin-minha-chave` | Admin credential do LiteLLM |
-| `MODEL_ID` | `llama-3.1-8b` | Alias que clientes usam no campo `model` |
-| `MODEL_SOURCE` | `meta-llama/Llama-3.1-8B-Instruct` | Repositório no HuggingFace Hub |
+| `MODEL_ID` | `mistral-7b` | Alias que clientes usam no campo `model` |
+| `MODEL_SOURCE` | `mistralai/Mistral-7B-Instruct-v0.3` | Repositório no HuggingFace Hub |
 | `GRAFANA_ADMIN_PASSWORD` | `sua-senha-grafana` | Senha do painel Grafana |
 
 ### 8.2 Variáveis opcionais (com defaults)
@@ -437,8 +437,8 @@ e substituídas por entradas numeradas:
 | Variável | Exemplo |
 |----------|---------|
 | `MODELS_COUNT` | `2` |
-| `MODEL_1_ID` | `llama-3.1-8b` |
-| `MODEL_1_SOURCE` | `meta-llama/Llama-3.1-8B-Instruct` |
+| `MODEL_1_ID` | `mistral-7b` |
+| `MODEL_1_SOURCE` | `mistralai/Mistral-7B-Instruct-v0.3` |
 | `MODEL_2_ID` | `qwen-2.5-14b` |
 | `MODEL_2_SOURCE` | `Qwen/Qwen2.5-14B-Instruct` |
 
@@ -573,8 +573,8 @@ sob demanda (scale-to-zero), e o LiteLLM roteia por nome.
 ```bash
 # Trocar de single-model para multi-model:
 MODELS_COUNT=2
-MODEL_1_ID=llama-3.1-8b
-MODEL_1_SOURCE=meta-llama/Llama-3.1-8B-Instruct
+MODEL_1_ID=mistral-7b
+MODEL_1_SOURCE=mistralai/Mistral-7B-Instruct-v0.3
 MODEL_2_ID=qwen-2.5-14b
 MODEL_2_SOURCE=Qwen/Qwen2.5-14B-Instruct
 

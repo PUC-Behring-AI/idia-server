@@ -356,8 +356,8 @@ O modelo é configurável via `.env` com duas variáveis:
 
 | Variável | Exemplo | Obrigatória |
 |----------|---------|-------------|
-| `MODEL_ID` | `llama-3.1-8b` | Sim |
-| `MODEL_SOURCE` | `meta-llama/Llama-3.1-8B-Instruct` | Sim |
+| `MODEL_ID` | `mistral-7b` | Sim |
+| `MODEL_SOURCE` | `mistralai/Mistral-7B-Instruct-v0.3` | Sim |
 
 A implementação do templating usa o entrypoint Python `scripts/render_config.py`, que substitui placeholders `${VAR}` por variáveis de ambiente antes de delegar ao Ray Serve.
 

@@ -78,7 +78,7 @@ def _simulate_litellm_request(
     if path == "/models":
         return 200, {
             "data": [
-                {"id": "llama-3.1-8b", "object": "model"},
+                {"id": "mistral-7b", "object": "model"},
             ]
         }
 
@@ -106,7 +106,7 @@ def _simulate_chat_completion(
         )
 
     # Model check
-    if model and model not in ("llama-3.1-8b",):
+    if model and model not in ("mistral-7b",):
         return 404, _mock_litellm_response(
                 404,
                 "not_found",
@@ -146,7 +146,7 @@ def _simulate_chat_completion(
     return 200, {
         "id": "chatcmpl-mock-001",
         "object": "chat.completion",
-        "model": model or "llama-3.1-8b",
+        "model": model or "mistral-7b",
         "choices": [
             {
                 "index": 0,
@@ -182,13 +182,13 @@ class TestLiteLLMContract:
             ),
             (
                 # Empty messages → 422
-                {"messages": [], "model": "llama-3.1-8b"},
+                {"messages": [], "model": "mistral-7b"},
                 422,
                 "invalid_request",
             ),
             (
                 # Messages not a list → 422
-                {"messages": "not-a-list", "model": "llama-3.1-8b"},
+                {"messages": "not-a-list", "model": "mistral-7b"},
                 422,
                 "invalid_request",
             ),
@@ -255,7 +255,7 @@ class TestLiteLLMContract:
     ) -> None:
         """Authentication is required for chat completions."""
         body = {
-            "model": "llama-3.1-8b",
+            "model": "mistral-7b",
             "messages": [{"role": "user", "content": "hello"}],
         }
         status, _ = _simulate_litellm_request("POST", "/chat/completions", headers, body)
@@ -294,12 +294,12 @@ class TestLiteLLMContract:
         assert status == 200
         assert "data" in response
         model_ids = [m["id"] for m in response["data"]]
-        assert "llama-3.1-8b" in model_ids
+        assert "mistral-7b" in model_ids
 
     def test_success_response_shape(self) -> None:
         """Successful completions have OpenAI-compatible shape."""
         body = {
-            "model": "llama-3.1-8b",
+            "model": "mistral-7b",
             "messages": [{"role": "user", "content": "hello"}],
         }
         status, response = _simulate_litellm_request(
@@ -317,7 +317,7 @@ class TestLiteLLMContract:
     def test_missing_role_in_message(self) -> None:
         """Messages without 'role' are rejected."""
         body = {
-            "model": "llama-3.1-8b",
+            "model": "mistral-7b",
             "messages": [{"content": "hello"}],
         }
         status, response = _simulate_litellm_request(
@@ -332,7 +332,7 @@ class TestLiteLLMContract:
     def test_empty_content_rejected(self) -> None:
         """Messages with empty content are handled (accepted by LiteLLM)."""
         body = {
-            "model": "llama-3.1-8b",
+            "model": "mistral-7b",
             "messages": [{"role": "user", "content": ""}],
         }
         status, _ = _simulate_litellm_request(
