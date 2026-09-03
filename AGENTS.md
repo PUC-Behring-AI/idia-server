@@ -1,21 +1,19 @@
 # AGENTS.md — IDIA Server
-# Location: /Users/anaxsouza/Documents/Github/idia-server/AGENTS.md
-# Inherits: ~/.config/opencode/AGENTS.md (global rules)
-# Requires: global >= 2.0
-# Version: 1.4
-# Last updated: 2026-07-28
+# Regras do projeto para qualquer agente que trabalhe neste repositório.
+# Lido por Claude Code, OpenCode e afins; não depende de nenhum deles.
+# Version: 2.0
+# Last updated: 2026-09-03
 
 ## Project
 
 **Name:** IDIA Server (Inference & Deployment for Intelligent Agents)
-**Description:** Self-hosted LLM inference server with automatic GPU elasticity
-  and on-demand model loading, deployable identically on a local multi-GPU host
-  and on any GPU host via Docker Compose.
+**Description:** Servidor de inferência LLM auto-hospedado, com autoscaling de
+  réplicas (incluindo scale-to-zero), provisionamento de usuários com budget e
+  rate-limit individuais, e interface web. Deploy local via Docker Compose.
 **Stack:** Python 3.11+, Docker Compose v2, Ray Serve LLM (2.56.0),
   vLLM (0.22.0, bundled by ray[serve,llm]==2.56.0), LiteLLM (1.85.0), Prometheus, Grafana
-**Stack standard:** ~/.config/opencode/standards/python.md
 **Testing:** pytest 8.x, PyYAML (config schema validation)
-**Repository:** https://github.com/PUC-Behring-Institute-for-AI/idia-server
+**Repository:** https://github.com/PUC-Behring-AI/idia-server
 
 ## Architecture (3-Tier)
 
@@ -31,62 +29,76 @@ Referência arquitetural completa: `docs/ARCHITECTURE.md`
 
 ## Directory Layout
 
+Os marcadores de fase saíram: as fases terminaram, e "Phase 2 ✓" ao lado de um
+arquivo dizia quando ele nasceu, não o que ele faz. O que segue é o papel de
+cada artefato. `tests/test_docs.py::TestDirectoryTree` falha se um nome listado
+aqui não existir em disco.
+
 ```
 idia-server/
-├── idia                   ← CLI unificada — único ponto de entrada para o mantenedor
-├── AGENTS.md              ← este arquivo — regras do projeto para agentes OpenCode
+├── idia                        ← CLI unificada: deploy, status, user, colleague, service
+├── AGENTS.md                   ← este arquivo — regras do projeto para agentes
+├── README.md                   ← porta de entrada; operação vive no docs/DEPLOY.md
+├── .env.example                ← template de configuração, sem segredos
 ├── .gitignore
-├── pyproject.toml         ← configuração pytest, ruff
-├── .env.example           ← template de secrets (Phase 2 ✓)
-├── Dockerfile.ray         ← imagem Ray Serve LLM (Phase 2 ✓)
-├── serve_config.yaml      ← config do Ray Serve — template ${VAR} (Phase 2 ✓)
-├── prometheus.yml         ← monitoring scrape config (Phase 4 ✓)
-├── scripts/               ← utilitários (entrypoint, helpers)
-│   ├── render_config.py   ← renderiza serve_config + litellm_config (Phase 2 ✓)
-│   ├── setup_environment.sh  ← prepara o ambiente (Docker Compose, Python, .env) (Post-6b ✓)
-│   ├── smoke_test.sh      ← Post-deploy smoke test com --wait (Tier 4 ✓)
-│   ├── install_service.sh  ← systemd unit installer (Post-6b ✓)
-│   ├── uninstall_service.sh ← systemd unit remover (Post-6b ✓)
-├── grafana/               ← dashboards e datasources (Phase 4 ✓)
-│   ├── datasources/       ← provisioning do datasource Prometheus
-│   │   └── datasource.yml
-│   ├── dashboards/        ← dashboards provisionados (vLLM, Ray) (Phase 4 ✓)
-│   │   ├── dashboard.yml  ← provider config
-│   │   └── vllm-dashboard.json  ← dashboard oficial vLLM (ID 25043)
-├── tests/                 ← suíte de testes (pytest)
-│   ├── __init__.py
-│   ├── conftest.py        ← fixtures compartilhadas
-│   ├── test_docs.py       ← testes de estrutura de documentação
-│   ├── test_config_schemas.py  ← testes de schema de configs
-│   ├── test_integration.py ← render_config (serve + litellm), multi-model, VRAM (Phase 2 ✓)
-│   ├── test_security.py    ← portas, pinning, fronteiras de confiança (Phase 2 ✓)
-│   ├── test_contract.py    ← contratos REST LiteLLM sem GPU (Tier 4 ✓)
-│   └── test_deploy_dry_run.py ← validação dry-run deploy (Post-5b ✓)
-├── docs/
-│   ├── ARCHITECTURE.md    ← documento vivo de arquitetura
-│   ├── DEPLOY.md          ← guia de operações completo (local) (Phase 5 ✓)
-│   ├── ADR.md             ← Architecture Decision Records (Phase 5 ✓)
-│   ├── audit_logs/        ← relatórios de auditoria vetados
-│   │   ├── 2026-06-28_audit_vettato.md
-│   │   └── 2026-06-28_audit_structural_vettato.md
-│   └── ...                ← futuros: GLOSSARY.md conforme necessário
-└── README.md              ← documentação do repositório (Phase 1 ✓)
+├── pyproject.toml              ← pytest, ruff
+├── Dockerfile.ray              ← imagem Ray Serve LLM + vLLM
+├── serve_config.yaml           ← template do Ray Serve; as entradas são geradas
+├── docker-compose.yml          ← orquestração dos 7 serviços
+├── prometheus.yml              ← scrape config
+├── .claude/
+│   ├── portao                  ← comando do gate local, lido pelo git-guard
+│   └── issue-vizinhas          ← seção exigida no corpo de toda issue nova
+├── scripts/
+│   ├── render_config.py        ← fonte única dos configs do Ray e do LiteLLM
+│   ├── colleague.sh            ← provisionamento de usuários, 6 passos
+│   ├── gate.sh                 ← o portão: pytest, shellcheck, ruff, YAML
+│   ├── smoke_test.sh           ← verificação pós-deploy, com --wait
+│   ├── setup_environment.sh    ← prepara a máquina (Linux)
+│   ├── install_service.sh      ← unit systemd
+│   └── uninstall_service.sh
+├── grafana/
+│   ├── datasources/datasource.yml   ← Prometheus provisionado
+│   └── dashboards/
+│       ├── dashboard.yml
+│       └── vllm-dashboard.json      ← dashboard oficial vLLM (ID 25043)
+├── tests/
+│   ├── conftest.py             ← fixtures compartilhadas
+│   ├── test_docs.py            ← estrutura da documentação e da árvore
+│   ├── test_config_schemas.py  ← schema dos configs e do gerado pelo LiteLLM
+│   ├── test_integration.py     ← render, multi-model, orçamento de VRAM
+│   ├── test_engine_config.py   ← dtype, quantização, residência, tool calling
+│   ├── test_stack_services.py  ← topologia do Compose, portas, banco
+│   ├── test_colleague.py       ← provisionamento, tiers, guardas de injeção
+│   ├── test_security.py        ← portas, pinning, fronteiras de confiança
+│   ├── test_contract.py        ← contratos REST do LiteLLM, sem GPU
+│   └── test_deploy_dry_run.py  ← dry-run, CLI, consistência do health check
+└── docs/
+    ├── ARCHITECTURE.md         ← documento vivo de arquitetura
+    ├── DEPLOY.md               ← guia de operação
+    ├── ADR.md                  ← Architecture Decision Records
+    └── audit_logs/             ← relatórios de auditoria consumidos
 ```
 
-## Implementation Phases
+## Histórico de fases
 
-| Phase | Name | Dependencies |
-|-------|------|-------------|
-| **1** | Foundation + AGENTS.md + README.md | — | ✅ |
-| **2** | Build Core | Phase 1 | ✅ |
-| **3** | AWS Deployment | Phase 2 | ✅ (removed — local-only simplified) |
-| **4** | Monitoring | Phase 2 | ✅ |
-| **5** | Final Documentation (revision + handoff) | Phases 1–4 | ✅ |
-| **Post-5** | Operational automation (unified CLI, dual render, DEPLOY.md) | Post-5 | ✅ |
-| **Post-6** | Local-only simplification | All | ✅ |
-| **Post-6b** | Boot-time startup (systemd integration) | Post-6 | ✅ |
+Todas concluídas. A tabela existia como plano; o que resta dela é o registro
+de como o projeto chegou aqui, e o detalhe vive no histórico estrutural do
+`ARCHITECTURE.md` §16.7 e nos ADRs.
 
----
+| Fase | Entregou |
+|------|----------|
+| 1–2 | Fundação e build core: Dockerfile, entrypoint, Compose, testes |
+| 3 | Deploy AWS — **removido** depois; ver ADR-003 e ADR-004 (superseded) |
+| 4 | Monitoramento: Prometheus, Grafana provisionado, DCGM |
+| 5 | Documentação: ARCHITECTURE, DEPLOY, ADR |
+| Post-5 | Automação: CLI unificada, render duplo |
+| Post-6 | Simplificação local-only |
+| Post-6b | Systemd, para subir no boot |
+| Post-6c | Provisionamento de usuários, config de engine por modelo, PostgreSQL e Open WebUI no Compose, portão local |
+
+O trabalho agora é dirigido por issues, não por fases. `gh issue list` é o
+plano.
 
 ## Document Evolution Contract
 
@@ -479,6 +491,18 @@ Isso permite que a suíte rode limpa desde a Fase 1.
 6. Atualizar esta seção no AGENTS.md.
 
 ---
+
+## O portão local
+
+`./scripts/gate.sh` roda antes de abrir qualquer PR: `pytest`, `bash -n` e
+`shellcheck` em todo shell, `ruff` no Python mantido, e parse dos YAML de
+configuração. Ele grava o marcador que o `git-guard` confere — sem isso o
+hook recusa o PR que o gate acabou de aprovar.
+
+O caminho está em `.claude/portao`, que pertence ao repositório e não à
+máquina. `.claude/issue-vizinhas` exige a seção `### Vizinhas` no corpo de
+toda issue nova: uma issue que nunca pergunta com quem colide é indistinguível
+de uma que perguntou e não achou nada, e só uma das duas é honesta.
 
 ## Git Conventions
 
