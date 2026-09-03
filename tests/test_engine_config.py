@@ -226,3 +226,28 @@ class TestNoStaticFallback:
         parsed = yaml.safe_load(render(template, overrides=SINGLE))
         assert len(parsed["applications"][0]["args"]["llm_configs"]) == 1
 
+
+
+# ── Compose must actually pass the options through ──────────────────────
+
+
+class TestComposePassesEngineOptions:
+    """A knob the container never receives is a knob that does not exist.
+
+    render_config.py runs inside ray-head and reads os.environ. If
+    docker-compose.yml does not list a variable, the operator sets it in .env,
+    sees nothing happen, and gets a config with the defaults.
+    """
+
+    def test_per_model_options_reach_the_container(self, repo_root: Path) -> None:
+        compose = yaml.safe_load((repo_root / "docker-compose.yml").read_text(encoding="utf-8"))
+        declared = "\n".join(compose["services"]["ray-head"]["environment"])
+        for suffix in ("DTYPE", "QUANTIZATION", "MIN_REPLICAS"):
+            assert f"MODEL_1_{suffix}=" in declared, f"MODEL_1_{suffix} not passed to ray-head"
+            assert f"MODEL_{suffix}=" in declared, f"MODEL_{suffix} not passed to ray-head"
+
+    def test_vram_budget_vars_reach_the_container(self, repo_root: Path) -> None:
+        compose = yaml.safe_load((repo_root / "docker-compose.yml").read_text(encoding="utf-8"))
+        declared = "\n".join(compose["services"]["ray-head"]["environment"])
+        assert "GPU_COUNT=" in declared
+        assert "GPU_VRAM_GB=" in declared
