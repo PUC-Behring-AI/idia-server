@@ -1,12 +1,41 @@
-# Ray Serve LLM configuration — placeholders rendered at runtime by
+# Ray Serve LLM configuration — renderizado em runtime por
 # scripts/render_config.py.
 #
-# Proxy binds inside the container only (:8000). The port is NEVER
-# published to the host — see docs/ARCHITECTURE.md §9.3.
+# O proxy escuta apenas dentro do container (:8000). A porta NUNCA é
+# publicada no host — ver docs/ARCHITECTURE.md §9.3.
 #
-# Single-model mode: set MODEL_ID + MODEL_SOURCE (backward compatible).
-# Multi-model mode: set MODELS_COUNT=N and MODEL_1_ID .. MODEL_N_SOURCE.
-#   Each model gets its own deployment with autoscaling.
+# Modo single-model: defina MODEL_ID + MODEL_SOURCE.
+# Modo multi-model:  defina MODELS_COUNT=N e MODEL_1_ID .. MODEL_N_SOURCE.
+#   Cada modelo vira um deployment com autoscaling próprio.
+#
+# As entradas de llm_configs NÃO ficam neste arquivo. O marcador na linha
+# `llm_configs:` é substituído pelo MODEL_CONFIG_TEMPLATE do
+# render_config.py, para os dois modos. Manter uma cópia estática aqui foi
+# como as duas definições divergiram: o template ganhou quantization, dtype,
+# min_replicas e tool calling, e a cópia ficou para trás em silêncio.
+#
+# Opções por modelo (MODEL_N_* ou, em single-model, MODEL_*):
+#   MODEL_N_DTYPE         float16 para AWQ/GPTQ, bfloat16 caso contrário
+#   MODEL_N_QUANTIZATION  awq | gptq | fp8 | vazio
+#   MODEL_N_MIN_REPLICAS  0 = scale-to-zero, 1 = sempre residente
+#
+# Forma de cada entrada gerada (apenas ilustrativa — não é lida):
+#
+#   - model_loading_config:
+#       model_id: mistral-7b
+#       model_source: mistralai/Mistral-7B-Instruct-v0.3
+#     engine_kwargs:
+#       dtype: bfloat16
+#       gpu_memory_utilization: 0.9
+#       max_model_len: 8192
+#       enable_auto_tool_choice: true     # ver ADR-011
+#     deployment_config:
+#       health_check_period_s: 30
+#       health_check_timeout_s: 10
+#       autoscaling_config:
+#         min_replicas: 0
+#         max_replicas: 4
+#         target_ongoing_requests: 64
 
 proxy_location: EveryNode
 http_options:
@@ -19,17 +48,3 @@ applications:
     route_prefix: "/"
     args:
       llm_configs: ##LLM_CONFIGS##
-        - model_loading_config:
-            model_id: ${MODEL_ID}
-            model_source: ${MODEL_SOURCE}
-          engine_kwargs:
-            dtype: bfloat16
-            gpu_memory_utilization: ${GPU_MEMORY_UTILIZATION}
-            max_model_len: ${MAX_MODEL_LEN}
-          deployment_config:
-            health_check_period_s: 30
-            health_check_timeout_s: 10
-            autoscaling_config:
-              min_replicas: 0
-              max_replicas: 4      # autoscaling até 4 réplicas (uma por GPU disponível)
-              target_ongoing_requests: 64

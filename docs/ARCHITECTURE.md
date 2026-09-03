@@ -257,35 +257,54 @@ applications:
     import_path: ray.serve.llm:build_openai_app
     route_prefix: "/"
     args:
-      llm_configs:
+      llm_configs: ##LLM_CONFIGS##
+```
+
+O arquivo termina aí. **Nenhuma entrada de `llm_configs` mora nele** — o
+marcador é substituído pelo `MODEL_CONFIG_TEMPLATE` do `render_config.py`,
+tanto em single-model quanto em multi-model. Cada entrada gerada tem a forma:
+
+```yaml
         - model_loading_config:
-            model_id: ${MODEL_ID}
-            model_source: ${MODEL_SOURCE}
+            model_id: mistral-7b
+            model_source: mistralai/Mistral-7B-Instruct-v0.3
           engine_kwargs:
-            dtype: bfloat16
-            gpu_memory_utilization: ${GPU_MEMORY_UTILIZATION}
-            max_model_len: ${MAX_MODEL_LEN}
+            dtype: bfloat16              # MODEL_N_DTYPE
+            gpu_memory_utilization: 0.9
+            max_model_len: 8192
+            quantization: awq            # só quando MODEL_N_QUANTIZATION existe
+            enable_auto_tool_choice: true  # incondicional, ADR-011
           deployment_config:
-            health_check_period_s: 30     # crashloop protection (STRUCT-14 / T4.3)
+            health_check_period_s: 30    # crashloop protection (STRUCT-14 / T4.3)
             health_check_timeout_s: 10
             autoscaling_config:
-              min_replicas: 0
+              min_replicas: 0            # MODEL_N_MIN_REPLICAS
               max_replicas: 4
               target_ongoing_requests: 64
 ```
 
-Placeholders `${VAR}` are substituted at runtime by `render_config.py` (§5.6).
-The env vars that map to each placeholder are documented in §5.5 and in
-`.env.example` at the repository root.
+**Por que uma fonte só.** Havia uma cópia estática desta entrada dentro do
+`serve_config.yaml`, usada quando `MODELS_COUNT` não estava definido. As duas
+divergiram: o template ganhou `quantization`, `dtype`, `min_replicas` e
+`enable_auto_tool_choice`, e a cópia não. O resultado é que declarar
+`MODEL_1_QUANTIZATION=awq` em single-model rendia uma config sem nenhuma
+linha de quantização — aceita e ignorada, sem aviso. Hoje os dois modos
+passam pelo mesmo gerador, e o `tests/test_engine_config.py` falha se uma
+segunda cópia reaparecer.
 
-**Multi-model mode:** Set `MODELS_COUNT=N` and `MODEL_1_ID` / `MODEL_1_SOURCE`
-through `MODEL_N_ID` / `MODEL_N_SOURCE`. The `##LLM_CONFIGS##` marker in the
-template triggers dynamic generation of `N` model entries, each with its own
-deployment and independent autoscaling (min_replicas=0, scale-to-zero).
-Single-model mode (`MODEL_ID` / `MODEL_SOURCE`) remains fully backward-compatible.
+**Opções por modelo.** `MODEL_N_DTYPE`, `MODEL_N_QUANTIZATION` e
+`MODEL_N_MIN_REPLICAS`. Em single-model, a forma sem número
+(`MODEL_DTYPE`, …) também vale, e a numerada tem precedência. Modelos AWQ
+pedem `dtype: float16` mais `quantization: awq`; modelos FP16 ficam em
+`bfloat16` sem linha de quantização.
 
-See `tests/test_integration.py::TestRenderConfig::test_multi_model_renders_multiple_entries`
-for the expected output structure.
+**Modo multi-model.** `MODELS_COUNT=N` mais `MODEL_1_ID`/`MODEL_1_SOURCE` até
+`MODEL_N_ID`/`MODEL_N_SOURCE`. Cada modelo vira um deployment com autoscaling
+próprio. Declarar `N` e definir menos agora é erro fatal — antes as entradas
+incompletas eram descartadas em silêncio, e quem pedia três modelos recebia
+dois sem saber.
+
+Ver `tests/test_engine_config.py` para a estrutura esperada da saída.
 
 ### 5.4 `docker-compose.yml`
 
@@ -1200,6 +1219,8 @@ envolve trade-offs significativos entre múltiplas alternativas viáveis.
 
 | 2026-09-03 | Provisionamento de usuários — (§5.1 layout com scripts/; §5.7 Open WebUI: discovery key via env var, nota sobre ausência no compose; §5.8 colleague.sh: 6 passos, 4 tiers, modelos derivados do .env); novo `scripts/colleague.sh` (reescrito: argv em vez de interpolação, sem segredos no código, sem `declare -A`); `idia`: subcomando `colleague`; `.env.example`: IDIA_PUBLIC_HOST, OWUI_DISCOVERY_KEY, OWUI_CONTAINER, LITELLM_PORT, OWUI_PORT; ADR-009 (visibilidade de modelos) e ADR-010 (provisionamento); `tests/test_colleague.py` (23 testes). | Trazer o provisionamento de usuários para a linha principal, saneando as três falhas que o impediam: credencial em texto claro (#2), injeção de código via interpolação (#4) e incompatibilidade com bash 3.2 (#9). |
 
+| 2026-09-03 | Configuração de engine por modelo — (§5.3 reescrita: serve_config.yaml deixa de carregar entrada estática, os dois modos passam pelo MODEL_CONFIG_TEMPLATE); `render_config.py`: MODEL_N_DTYPE / MODEL_N_QUANTIZATION / MODEL_N_MIN_REPLICAS com fallback sem número em single-model, `enable_auto_tool_choice` incondicional, entrada incompleta em multi-model passa a ser fatal, marcador só casa na linha `llm_configs:`; ADR-011 (tool calling sem parser); `.env.example`: opções por modelo documentadas; `tests/test_engine_config.py` (15 testes). | Modelos quantizados não eram servíveis na linha principal: o template fixava `dtype: bfloat16` sem `quantization`, e sem `enable_auto_tool_choice` toda requisição do Open WebUI falhava. |
+
 ---
 
-*Document version: 2.6 | Last updated: 2026-09-03 | Sections changed: 5.1, 5.7, 5.8, Structural Change History*
+*Document version: 2.7 | Last updated: 2026-09-03 | Sections changed: 5.3, Structural Change History*
