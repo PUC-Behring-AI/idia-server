@@ -42,8 +42,27 @@ services:
       - MODEL_2_SOURCE=${MODEL_2_SOURCE:-}
       - MODEL_3_ID=${MODEL_3_ID:-}
       - MODEL_3_SOURCE=${MODEL_3_SOURCE:-}
+      # Per-model engine options (§5.3). Without these the container never sees
+      # them, and render_config.py silently falls back to bfloat16 / no
+      # quantization / scale-to-zero — an AWQ model would load as if it were not
+      # quantized. The unnumbered form is the single-model shorthand.
+      - MODEL_DTYPE=${MODEL_DTYPE:-}
+      - MODEL_QUANTIZATION=${MODEL_QUANTIZATION:-}
+      - MODEL_MIN_REPLICAS=${MODEL_MIN_REPLICAS:-}
+      - MODEL_1_DTYPE=${MODEL_1_DTYPE:-}
+      - MODEL_1_QUANTIZATION=${MODEL_1_QUANTIZATION:-}
+      - MODEL_1_MIN_REPLICAS=${MODEL_1_MIN_REPLICAS:-}
+      - MODEL_2_DTYPE=${MODEL_2_DTYPE:-}
+      - MODEL_2_QUANTIZATION=${MODEL_2_QUANTIZATION:-}
+      - MODEL_2_MIN_REPLICAS=${MODEL_2_MIN_REPLICAS:-}
+      - MODEL_3_DTYPE=${MODEL_3_DTYPE:-}
+      - MODEL_3_QUANTIZATION=${MODEL_3_QUANTIZATION:-}
+      - MODEL_3_MIN_REPLICAS=${MODEL_3_MIN_REPLICAS:-}
       - MAX_MODEL_LEN=${MAX_MODEL_LEN:-8192}
       - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
+      # Read by the VRAM budget check in render_config.py.
+      - GPU_COUNT=${GPU_COUNT:-1}
+      - GPU_VRAM_GB=${GPU_VRAM_GB:-24.0}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/-/routes"]
       interval: 15s
