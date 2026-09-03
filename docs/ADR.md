@@ -358,3 +358,94 @@ modelos. Derrubou o worker em 100% dos casos testados.
 configuração; + sem conflito com templates nativos; − exige que o modelo
 tenha chat template com suporte a tools — Qwen3 e Mistral Instruct têm;
 um modelo sem isso aceitaria o parâmetro e ignoraria as ferramentas]
+
+---
+
+## ADR-012: PostgreSQL em container local para as virtual keys do LiteLLM
+**Data:** 2026-09-03 | **Fase:** Gateway | **Status:** Accepted
+
+**Contexto:** O `ARCHITECTURE.md` §1 diz que a camada de gateway existe
+**especificamente** porque este deployment serve vários usuários, cada um com
+budget e rate-limit próprios. Sem banco, o LiteLLM v1.85.0 não emite uma única
+virtual key: `/key/generate` não tem onde persistir. O que sobra é a master
+key — a credencial de administrador, que a §9.1 diz explicitamente nunca ser
+distribuída.
+
+Ou seja: a stack subia descrevendo um sistema multiusuário e só conseguia
+atender um único cliente, com a chave errada.
+
+SQLite foi tentado (`DATABASE_URL=sqlite://...`) e recusado pelo próprio
+Prisma: o schema embutido na imagem Docker é hardcoded com
+`provider = "postgresql"`.
+
+**Decisão:** um container `postgres:16-alpine` no `docker-compose.yml`, com
+volume nomeado `postgres_data`, healthcheck `pg_isready` e nenhuma porta
+publicada. O LiteLLM recebe `DATABASE_URL` e depende do banco via
+`condition: service_healthy` — sem isso ele sobe antes do Postgres aceitar
+conexão e falha o boot na primeira migração.
+
+`POSTGRES_PASSWORD` e `UI_PASSWORD` usam a forma `${VAR:?mensagem}` no
+compose: sem valor no `.env`, o `docker compose` recusa subir com uma
+mensagem nomeando a variável, em vez de subir com senha vazia.
+
+**Alternativa descartada:** PostgreSQL gerenciado (AWS RDS). Rejeitado por
+custo e complexidade desproporcionais a um deployment de instância única —
+o Postgres ocupa ~50 MB de RAM ociosa numa máquina que tem dezenas de GB.
+A troca continua possível: basta apontar `DATABASE_URL` para outro host.
+
+**Consequências:** [+ virtual keys, budgets, rate limits e spend tracking
+passam a funcionar; + o painel admin em `:4000/ui` fica utilizável;
+− mais um container e mais um volume no ciclo de vida da stack;
+− **sem backup automático** — o volume `postgres_data` guarda as chaves de
+todos os usuários e o histórico de gasto, e perdê-lo é perder ambos. Um
+`pg_dump` periódico é trabalho pendente, não coberto por este ADR]
+
+---
+
+## ADR-013: Open WebUI como serviço do Compose, publicado na 3001
+**Data:** 2026-09-03 | **Fase:** Interface | **Status:** Accepted
+
+**Contexto:** A interface que todos os usuários do instituto abrem existia
+apenas como um `docker run` copiado de um bloco da documentação. Fora do
+Compose, ela não tinha healthcheck, não reiniciava sozinha, não aparecia em
+`./idia status`, não parava com `./idia stop`, e seu volume não estava
+declarado. Reiniciar a máquina trazia tudo de volta menos a interface.
+
+Havia um segundo problema mais silencioso: a rede do `docker run` era
+`--network idia-server_default`, nome derivado do diretório onde o
+repositório foi clonado. Clonar em `~/idia` em vez de `~/idia-server`
+quebrava a conexão com o LiteLLM, e a mensagem de erro não dizia nada sobre
+nomes de diretório.
+
+**Decisão:** serviço `open-webui` no `docker-compose.yml`, com
+`container_name` fixo (`idia-webui` por padrão), `depends_on: litellm` com
+`condition: service_healthy`, healthcheck, limite de memória, `restart:
+unless-stopped` e volume nomeado `webui_data`.
+
+O nome do container é fixo de propósito: o `colleague.sh` acessa o SQLite
+dentro dele para criar contas e grants de modelo (ADR-009). Um container
+renomeado quebra o provisionamento, então o nome é configuração declarada,
+não convenção implícita.
+
+`ENABLE_SIGNUP=false`: uma conta auto-registrada não tem virtual key nem
+`access_grant`, então o usuário entra e encontra um dropdown vazio. Contas
+nascem pelo `./idia colleague create`, que é o que amarra as três coisas.
+
+**A porta 3001 é publicada, e isso é uma exceção consciente à §9.1.** A regra
+"só a 4000 é externa" foi escrita quando o único cliente era um SDK. A
+interface web precisa ser alcançável das máquinas das pessoas, e um serviço
+que ninguém alcança não serve para nada. O que a exceção **não** dispensa:
+o Open WebUI não termina TLS, então em qualquer rede que não seja já
+confiável ele pertence atrás de um proxy reverso que o faça. `OWUI_PORT`
+existe para quem quiser mover a porta ou publicá-la apenas em `127.0.0.1`
+e tunelar.
+
+**Alternativa descartada:** manter o `docker run` documentado. É o estado
+que produziu os problemas acima; documentar melhor não faz o container
+reiniciar depois de um reboot.
+
+**Consequências:** [+ a interface entra no ciclo de vida da stack;
++ `./idia stop` e `./idia status` passam a enxergá-la; + o volume é
+declarado e sobrevive a `docker compose down`; − uma segunda porta externa,
+sem TLS por padrão; − o `colleague.sh` fica acoplado ao nome do container,
+agora ao menos declarado em um lugar só]
