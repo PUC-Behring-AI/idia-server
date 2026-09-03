@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Render serve_config.yaml + config.yaml with env var substitution.
+"""Render the Ray Serve and LiteLLM configs from environment variables.
+
+This module is the single source of both. serve_config.yaml is a template
+whose llm_configs entries are generated here; the LiteLLM config has no
+template at all and is built from a dict in _render_litellm_config().
 
 Usage (via Dockerfile CMD):
     python3 /app/render_config.py
@@ -37,7 +41,6 @@ import sys
 from pathlib import Path
 
 import yaml
-
 
 # ── Env var schema ──────────────────────────────────────────────────────────
 
@@ -234,13 +237,29 @@ def _validate_schema_values(env: dict[str, str]) -> None:
             return  # already validated in _collect_env
 
         if models_count > 0:
-            total_util = models_count * gpu_util
-            if total_util > gpu_count:
+            # Only models kept resident compete for VRAM at the same time.
+            # The previous check multiplied GPU_MEMORY_UTILIZATION by the total
+            # model count, which refused configurations that work: under
+            # scale-to-zero (min_replicas: 0) a model holds no memory until a
+            # request wakes it, and Ray drops it again when idle. Five
+            # scale-to-zero models on one GPU is the deployment this project
+            # was built for, and the aggregate formula called it impossible.
+            resident = [
+                n
+                for n in range(1, models_count + 1)
+                if _engine_option(env, n, "MIN_REPLICAS", "0") not in ("", "0")
+            ]
+            resident_util = len(resident) * gpu_util
+            if resident_util > gpu_count:
+                names = ", ".join(env.get(f"MODEL_{n}_ID", f"model_{n}") for n in resident)
                 print(
-                    f"FATAL: {models_count} modelo(s) com "
-                    f"GPU_MEMORY_UTILIZATION={gpu_util:.1f} cada = "
-                    f"{total_util:.1f}x GPU, mas GPU_COUNT={gpu_count}. "
-                    f"Reduza GPU_MEMORY_UTILIZATION ou aumente GPU_COUNT.",
+                    f"FATAL: {len(resident)} modelo(s) residente(s) ({names}) com "
+                    f"GPU_MEMORY_UTILIZATION={gpu_util:.2f} cada somam "
+                    f"{resident_util:.2f}x GPU, mas GPU_COUNT={gpu_count}.\n"
+                    f"  Modelos residentes (MODEL_N_MIN_REPLICAS >= 1) ocupam a GPU "
+                    f"ao mesmo tempo.\n"
+                    f"  Reduza GPU_MEMORY_UTILIZATION, deixe algum modelo em "
+                    f"scale-to-zero, ou aumente GPU_COUNT.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -422,13 +441,32 @@ def _substitute(raw: str, env: dict[str, str]) -> str:
             new_lines.append(line)
         raw = "\n".join(new_lines)
 
+    unresolved: list[str] = []
+
     def _replacer(match: re.Match) -> str:
         name = match.group(1)
-        raw_match: str = match.group(0) or match.string[match.start() : match.end()]
-        value = env.get(name, raw_match)
-        return _escape_yaml_value(value)
+        if name not in env:
+            unresolved.append(name)
+            return match.group(0)
+        return _escape_yaml_value(env[name])
 
-    return ENV_VAR_RE.sub(_replacer, raw)
+    rendered = ENV_VAR_RE.sub(_replacer, raw)
+
+    if unresolved:
+        # A leftover ${VAR} is valid YAML — it just becomes the literal string
+        # "${VAR}". Only model_id and model_source are checked downstream, so a
+        # typo in any other field used to reach the engine as text and fail
+        # somewhere far from its cause.
+        names = ", ".join(sorted(set(unresolved)))
+        print(
+            f"FATAL: placeholder(s) sem valor no template: {names}\n"
+            f"  Defina a(s) variável(is) no .env ou remova o placeholder. "
+            f"Deixá-lo passar produz YAML válido com a string literal '${{VAR}}'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    return rendered
 
 
 def _validate_yaml(rendered: str) -> None:
@@ -446,12 +484,12 @@ def _validate_yaml(rendered: str) -> None:
     # Structural validation against expected schema
     apps = parsed.get("applications", [])
     if not apps:
-        print(f"FATAL: Rendered YAML has no 'applications' list", file=sys.stderr)
+        print("FATAL: Rendered YAML has no 'applications' list", file=sys.stderr)
         sys.exit(1)
 
     llm_configs = apps[0].get("args", {}).get("llm_configs", [])
     if not llm_configs:
-        print(f"FATAL: No llm_configs found in first application entry", file=sys.stderr)
+        print("FATAL: No llm_configs found in first application entry", file=sys.stderr)
         sys.exit(1)
 
     # Validate each llm_config has model_id and model_source

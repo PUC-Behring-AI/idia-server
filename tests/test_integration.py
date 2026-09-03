@@ -390,39 +390,87 @@ class TestRenderSchemaErrors:
         with pytest.raises(SystemExit):
             render("model_id: ${MODEL_ID}", overrides=overrides)
 
-    def test_multi_model_vram_budget_exceeds_gpu_count(self, scripts_dir: Path) -> None:
-        """3 models on 1 GPU fails VRAM budget check."""
+    TEMPLATE = (
+        "proxy_location: EveryNode\n"
+        "http_options:\n"
+        "  host: 0.0.0.0\n"
+        "  port: 8000\n"
+        "applications:\n"
+        "  - name: llms\n"
+        "    import_path: ray.serve.llm:build_openai_app\n"
+        "    route_prefix: /\n"
+        "    args:\n"
+        "      llm_configs: ##LLM_CONFIGS##\n"
+    )
+
+    @staticmethod
+    def _render(scripts_dir: Path, overrides: dict):
         sys.path.insert(0, str(scripts_dir.parent))
         try:
             from scripts.render_config import render
         finally:
             sys.path.pop(0)
+        return render(TestRenderSchemaErrors.TEMPLATE, overrides=overrides)
 
+    def test_resident_models_exceeding_gpu_count_is_fatal(self, scripts_dir: Path) -> None:
+        """Two always-resident models at 0.9 utilisation do not fit one GPU.
+
+        Residency is what makes models compete: MODEL_N_MIN_REPLICAS >= 1 keeps
+        the weights in VRAM whether or not anyone is asking.
+        """
+        with pytest.raises(SystemExit):
+            self._render(scripts_dir, {
+                "MODELS_COUNT": "2",
+                "MODEL_1_ID": "a", "MODEL_1_SOURCE": "org/a", "MODEL_1_MIN_REPLICAS": "1",
+                "MODEL_2_ID": "b", "MODEL_2_SOURCE": "org/b", "MODEL_2_MIN_REPLICAS": "1",
+                "GPU_COUNT": "1",
+                "GPU_MEMORY_UTILIZATION": "0.9",
+            })
+
+    def test_scale_to_zero_models_do_not_compete(self, scripts_dir: Path) -> None:
+        """Five scale-to-zero models on one GPU is a valid configuration.
+
+        The previous check multiplied utilisation by the total model count and
+        refused this outright — the exact deployment this project was built
+        for. Under min_replicas: 0 a model holds no VRAM until a request wakes
+        it, and Ray drops it again when idle.
+        """
+        overrides = {"MODELS_COUNT": "5", "GPU_COUNT": "1", "GPU_MEMORY_UTILIZATION": "0.9"}
+        for n in range(1, 6):
+            overrides[f"MODEL_{n}_ID"] = f"m{n}"
+            overrides[f"MODEL_{n}_SOURCE"] = f"org/m{n}"
+        rendered = self._render(scripts_dir, overrides)
+        parsed = yaml.safe_load(rendered)
+        assert len(parsed["applications"][0]["args"]["llm_configs"]) == 5
+
+    def test_one_resident_among_many_is_allowed(self, scripts_dir: Path) -> None:
+        """The production shape: one model warm, the rest on demand."""
         overrides = {
             "MODELS_COUNT": "3",
-            "MODEL_1_ID": "model-a", "MODEL_1_SOURCE": "org/a",
-            "MODEL_2_ID": "model-b", "MODEL_2_SOURCE": "org/b",
-            "MODEL_3_ID": "model-c", "MODEL_3_SOURCE": "org/c",
             "GPU_COUNT": "1",
             "GPU_MEMORY_UTILIZATION": "0.9",
+            "MODEL_1_MIN_REPLICAS": "1",
         }
-        template = (
-            "proxy_location: EveryNode\n"
-            "http_options:\n"
-            "  host: 0.0.0.0\n"
-            "  port: 8000\n"
-            "applications:\n"
-            "  - name: llms\n"
-            "    import_path: ray.serve.llm:build_openai_app\n"
-            "    route_prefix: /\n"
-            "    args:\n"
-            "      llm_configs:\n"
-            "        - model_loading_config:\n"
-            "            model_id: ${MODEL_1_ID}\n"
-            "            model_source: ${MODEL_1_SOURCE}\n"
-        )
+        for n in range(1, 4):
+            overrides[f"MODEL_{n}_ID"] = f"m{n}"
+            overrides[f"MODEL_{n}_SOURCE"] = f"org/m{n}"
+        parsed = yaml.safe_load(self._render(scripts_dir, overrides))
+        autoscaling = [
+            c["deployment_config"]["autoscaling_config"]["min_replicas"]
+            for c in parsed["applications"][0]["args"]["llm_configs"]
+        ]
+        assert autoscaling == [1, 0, 0]
+
+    def test_unresolved_placeholder_is_fatal(self, scripts_dir: Path) -> None:
+        """A typo'd ${VAR} is valid YAML — it must not reach the engine as text."""
+        sys.path.insert(0, str(scripts_dir.parent))
+        try:
+            from scripts.render_config import render
+        finally:
+            sys.path.pop(0)
+        template = self.TEMPLATE.replace("  port: 8000", "  port: ${PORTA_COM_TYPO}")
         with pytest.raises(SystemExit):
-            render(template, overrides=overrides)
+            render(template, overrides={"MODEL_ID": "m", "MODEL_SOURCE": "org/m"})
 
     def test_multi_model_vram_budget_fits_gpu_count(self, scripts_dir: Path) -> None:
         """2 models on 2 GPUs passes VRAM budget check."""

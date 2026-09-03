@@ -18,6 +18,7 @@ and skip when Docker is unavailable.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -151,16 +152,27 @@ class TestTrustBoundaries:
     See ARCHITECTURE.md §9.1.
     """
 
-    def test_litellm_config_has_master_key(self, repo_root: Path) -> None:
-        """config.yaml declares general_settings.master_key."""
-        path = repo_root / "config.yaml"
-        if not path.exists():
-            pytest.skip("config.yaml not created yet")
-        config = yaml.safe_load(path.read_text(encoding="utf-8"))
-        assert "general_settings" in config, "config.yaml missing general_settings (§9.1)"
-        assert "master_key" in config["general_settings"], (
-            "config.yaml missing master_key in general_settings (§9.1)"
+    def test_generated_config_never_embeds_the_master_key(self, repo_root: Path) -> None:
+        """The rendered config is written to disk — the key must stay a reference.
+
+        Substituting the real value here would put the admin credential in a
+        file next to the repo, one `cat` away from a screen share (§9.1).
+        """
+        sys.path.insert(0, str(repo_root))
+        try:
+            from scripts.render_config import render_litellm_config
+        finally:
+            sys.path.pop(0)
+        rendered = render_litellm_config(
+            overrides={
+                "MODEL_ID": "test-model",
+                "MODEL_SOURCE": "test-org/test-model",
+                "LITELLM_MASTER_KEY": "sk-should-never-be-written",
+            }
         )
+        assert "sk-should-never-be-written" not in rendered
+        config = yaml.safe_load(rendered)
+        assert config["general_settings"]["master_key"].startswith("os.environ/")
 
 
 @pytest.mark.security

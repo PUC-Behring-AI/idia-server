@@ -72,11 +72,13 @@ fi
 # ── Wait for server health ─────────────────────────────────────────────────
 
 if [ "$WAIT_MODE" = true ]; then
-    echo "Waiting for server at $BASE_URL/health ..."
+    echo "Waiting for server at $BASE_URL/health/liveliness ..."
     echo "(timeout: ${WAIT_TIMEOUT_SEC}s — model loading may take 5-15 min)"
     elapsed=0
     while [ "$elapsed" -lt "$WAIT_TIMEOUT_SEC" ]; do
-        if curl -sf --max-time 5 "${BASE_URL}/health" >/dev/null 2>&1; then
+        # /health/liveliness is public; /health requires a token when master_key
+        # is set, so an unauthenticated probe there never succeeds.
+        if curl -sf --max-time 5 "${BASE_URL}/health/liveliness" >/dev/null 2>&1; then
             echo "  ✓ Server is healthy (${elapsed}s)"
             break
         fi

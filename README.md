@@ -292,13 +292,11 @@ idia-server/
 ├── .env.example           ← Template de secrets (Phase 2 ✓)
 ├── Dockerfile.ray         ← Imagem Ray Serve LLM (Phase 2 ✓)
 ├── serve_config.yaml      ← Template Ray Serve com ${VAR} placeholders (Phase 2 ✓)
-├── config.yaml            ← Template LiteLLM com ${VAR} placeholders (Phase 2 ✓)
 ├── docker-compose.yml     ← Orquestração local (Phase 2 ✓)
 ├── prometheus.yml         ← Configuração de scrape (Phase 4 ✓)
 ├── scripts/
 │   ├── render_config.py   ← Renderiza serve_config + litellm_config (Phase 2 ✓)
 │   ├── smoke_test.sh      ← Smoke test pós-deploy com --wait (Tier 4 ✓)
-│   └── create_user.sh     ← Criação de chaves virtuais LiteLLM (Tier 4 ✓)
 ├── grafana/
 │   ├── datasources/datasource.yml   ← Provisioning automático do Prometheus
 │   └── dashboards/
@@ -400,7 +398,7 @@ Em `tests/test_config_schemas.py`:
 |----------------|-------------|---------------------|
 | `TestServeConfig` | `serve_config.yaml` | `proxy_location: EveryNode`, `http_options.port: 8000`, `applications` é lista não-vazia |
 | `TestDockerCompose` | `docker-compose.yml` | Serviços `ray-head` e `litellm` presentes; `ipc: host` e `shm_size` em ray-head |
-| `TestLiteLLMConfig` | `config.yaml` | `model_list` e `general_settings` presentes; master_key declarado |
+| `TestLiteLLMConfig` | saída de `render_litellm_config()` | `model_list` não-vazia, rota para `ray-head:8000`, master_key como referência de env |
 | `TestPrometheusConfig` | `prometheus.yml` | `global` e `scrape_configs`; targets apontam para `ray-head:8080` e `litellm:4000` |
 | `TestEnvExample` | `.env.example` | Declara `HF_TOKEN`, `LITELLM_MASTER_KEY`, `MODEL_ID`, `MODEL_SOURCE` |
 

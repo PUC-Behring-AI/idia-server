@@ -315,9 +315,9 @@ de pessoas, não milhares.
 
 **Consequências:** [+ provisionamento em um comando; + revoke completo, sem
 resíduo; + testável sem Docker e sem servidor (`--dry-run`, `tiers`);
-− manipulação direta do SQLite do Open WebUI (ver ADR-009);
-− dois caminhos de criação de usuário convivem enquanto `create_user.sh`
-existir — ver issue #6]
+− manipulação direta do SQLite do Open WebUI (ver ADR-009)]
+
+**Atualização (issue #6):** `create_user.sh` foi removido e o `./idia user create` passou a delegar para `colleague.sh key`. Havia dois vocabulários de tier — `hard/regular/light` e `light/regular/heavy/classroom` — com limites diferentes para o mesmo nome, e o primeiro não aplicava limite nenhum. Agora existe uma definição só. `hard` continua sendo aceito como sinônimo de `heavy`, com aviso.
 
 ---
 

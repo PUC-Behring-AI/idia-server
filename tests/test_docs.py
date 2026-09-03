@@ -106,7 +106,6 @@ README_PHASE_MARKERS: dict[str, str] = {
     "Dockerfile.ray": "Phase 2 ✓",
     "serve_config.yaml": "Phase 2 ✓",
     "docker-compose.yml": "Phase 2 ✓",
-    "config.yaml": "Phase 2 ✓",
     "prometheus.yml": "Phase 4 ✓",
 }
 

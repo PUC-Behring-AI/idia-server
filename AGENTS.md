@@ -40,7 +40,6 @@ idia-server/
 ├── .env.example           ← template de secrets (Phase 2 ✓)
 ├── Dockerfile.ray         ← imagem Ray Serve LLM (Phase 2 ✓)
 ├── serve_config.yaml      ← config do Ray Serve — template ${VAR} (Phase 2 ✓)
-├── config.yaml            ← config LiteLLM — template ${VAR} (Phase 2 ✓)
 ├── prometheus.yml         ← monitoring scrape config (Phase 4 ✓)
 ├── scripts/               ← utilitários (entrypoint, helpers)
 │   ├── render_config.py   ← renderiza serve_config + litellm_config (Phase 2 ✓)
@@ -48,7 +47,6 @@ idia-server/
 │   ├── smoke_test.sh      ← Post-deploy smoke test com --wait (Tier 4 ✓)
 │   ├── install_service.sh  ← systemd unit installer (Post-6b ✓)
 │   ├── uninstall_service.sh ← systemd unit remover (Post-6b ✓)
-│   └── create_user.sh     ← LiteLLM virtual key creator (Tier 4 ✓)
 ├── grafana/               ← dashboards e datasources (Phase 4 ✓)
 │   ├── datasources/       ← provisioning do datasource Prometheus
 │   │   └── datasource.yml
@@ -100,7 +98,7 @@ O documento de arquitetura evolui com o código. Estas regras previnem desync:
 - `Dockerfile.ray` — imagem base, dependências, entrypoint
 - `serve_config.yaml` — modelos, autoscaling, engine_kwargs
 - `docker-compose.yml` — serviços, portas, networks, volumes, GPU config
-- `config.yaml` — LiteLLM routing, model list, health checks
+- `scripts/render_config.py` — `_render_litellm_config()`, que é onde o roteamento do LiteLLM realmente mora (§4.3)
 - `prometheus.yml` — scrape targets, alert rules
 - Qualquer arquivo em `tests/` que introduza nova categoria de teste (#)
 - Port mappings, topologia de rede, perímetros de segurança
@@ -426,7 +424,7 @@ Cada classe de teste valida a estrutura de um arquivo de configuração contra a
 |--------|-------------|---------------|
 | `TestServeConfig` | `serve_config.yaml` | `proxy_location: EveryNode`, `http_options.port: 8000`, `applications` é lista não-vazia |
 | `TestDockerCompose` | `docker-compose.yml` | Serviços `ray-head` e `litellm` presentes; `ipc: host` e `shm_size` em ray-head |
-| `TestLiteLLMConfig` | `config.yaml` | `model_list` e `general_settings` presentes; master_key declarado |
+| `TestLiteLLMConfig` | saída de `render_litellm_config()` | `model_list` não-vazia, rota para `ray-head:8000`, master_key como referência de env |
 | `TestPrometheusConfig` | `prometheus.yml` | `global` e `scrape_configs`; targets apontam para `ray-head:8080` e `litellm:4000`; scrape_interval=15s; sem rule_files (alertas no Grafana) |
 | `TestGrafanaDatasourceConfig` | `grafana/datasources/datasource.yml` | datasource Prometheus configurado como default; url=http://prometheus:9090; access=proxy |
 | `TestEnvExample` | `.env.example` | Declara `HF_TOKEN`, `LITELLM_MASTER_KEY`, `MODEL_ID`, `MODEL_SOURCE` |
@@ -459,7 +457,7 @@ Cada classe de teste valida a estrutura de um arquivo de configuração contra a
 | `TestPortIsolation.test_ray_client_not_published` | Porta 10001 NÃO está em `ports:` |
 | `TestImagePinning.test_dockerfile_no_latest` | Dockerfile.ray não usa `:latest` |
 | `TestImagePinning.test_compose_no_latest` | Nenhum serviço no Compose usa `:latest` |
-| `TestTrustBoundaries.test_litellm_config_has_master_key` | config.yaml declara `general_settings.master_key` |
+| `TestTrustBoundaries.test_generated_config_never_embeds_the_master_key` | o config renderizado nunca contém o valor real da master key |
 | `TestDashboardBinding.test_dashboard_host_set_to_localhost` | serve_config.yaml http_options.host=0.0.0.0 (proxy interno)
 | `TestMonitoringPortIsolation.test_prometheus_port_not_published` | Porta 9090 (Prometheus) não está em `ports:` no Compose
 | `TestMonitoringPortIsolation.test_grafana_port_bound_localhost` | Porta 3000 (Grafana) bound a 127.0.0.1
