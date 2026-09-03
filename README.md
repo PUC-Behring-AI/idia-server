@@ -529,37 +529,48 @@ automaticamente. DCGM exporter ativa apenas em hosts Linux com drivers NVIDIA
 
 ## 12. Gerenciamento de Usuários
 
-O IDIA Server usa chaves virtuais do LiteLLM por usuário, com três tiers de acesso:
+Há dois caminhos. Para dar acesso a uma pessoa, use o primeiro.
 
-| Tier | RPM | TPM | Perfil típico |
-|------|-----|-----|--------------|
-| `hard` | 15 | 50.000 | Pesquisadores, uso intenso |
-| `regular` | 4 | 15.000 | Mestrandos, uso regular |
-| `light` | 1 | 5.000 | Graduação, uso casual |
+### Provisionar um colega (recomendado)
 
-### Criar usuário
+Um comando cria a conta inteira — chave virtual no LiteLLM, conta no Open
+WebUI, vínculo entre as duas e permissão de modelo. A pessoa recebe um e-mail
+e uma senha e já consegue conversar.
 
 ```bash
-./idia user create alice hard       # Alice recebe uma chave com tier hard
-./idia user create bob regular      # Bob com tier regular
-./idia user create carol light      # Carol com tier light
+./idia colleague create ana@idia.org "Ana Costa" --tier regular
+./idia colleague status ana@idia.org      # chave, modelos concedidos, gasto
+./idia colleague revoke ana@idia.org      # remove os cinco artefatos
+./idia colleague tiers                    # definições e modelos concedidos
 ```
 
-### Listar chaves ativas
+| Tier | Budget | RPM | TPM | Perfil típico |
+|------|--------|-----|-----|--------------|
+| `light` | $0,50/dia | 10 | 5.000 | Visitante, estagiário |
+| `regular` | $2/dia | 60 | 30.000 | Pesquisador, uso diário |
+| `heavy` | $10/dia | — | — | Pesquisador sênior |
+| `classroom` | $20/dia | 300 | 200.000 | Sala de aula, 30+ alunos |
+
+Os modelos concedidos são os que o servidor serve de fato; `--models`
+restringe a um subconjunto. `--dry-run` mostra o plano sem criar nada.
+
+Requer `IDIA_PUBLIC_HOST` e `OWUI_DISCOVERY_KEY` no `.env` — veja o
+`.env.example`. Detalhes em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+§5.8 e nos ADR-009 e ADR-010.
+
+### Apenas uma chave de API
+
+Para um script ou serviço que não precisa de conta web:
 
 ```bash
-./idia user list
+./idia colleague key bot@idia.org --tier light
+./idia user list                          # chaves ativas
 ```
 
-### Revogar acesso
-
-```bash
-# Via API LiteLLM diretamente:
-curl -X POST http://localhost:4000/key/delete \
-  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"keys": ["sk-alice-key-aqui"]}'
-```
+> **Atenção:** `./idia user create` é um caminho legado que emite chaves
+> **sem rate limit e sem budget** — os tiers que ele anuncia não são
+> aplicados. Ver [issue #6](../../issues/6). Use `./idia colleague` até
+> que aquela issue seja resolvida.
 
 ---
 

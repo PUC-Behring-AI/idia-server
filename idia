@@ -17,6 +17,10 @@
 #   ./idia status                       Show service health + loaded models
 #   ./idia user create <name> <tier>    Create a user virtual key
 #   ./idia user list                    List all active virtual keys
+#   ./idia colleague create <email> <name>  Create key + Open WebUI account (linked)
+#   ./idia colleague status <email>     Show a colleague's key, grants and spend
+#   ./idia colleague revoke <email>     Revoke access and clean up every artefact
+#   ./idia colleague tiers              Show tier definitions and granted models
 #   ./idia logs [service]               Show service logs (all or specific)
 #   ./idia stop                         Stop all local services
 #   ./idia --help                       This message
@@ -77,6 +81,7 @@ _help() {
     echo "  ${CYAN}status${RESET}                       Show service health and loaded models"
     echo "  ${CYAN}user create${RESET} <name> <tier>  Create a LiteLLM virtual key for a user"
     echo "  ${CYAN}user list${RESET}                  List all active virtual keys"
+    echo "  ${CYAN}colleague${RESET} <subcommand>     Provision a colleague (key + Open WebUI account)"
     echo "  ${CYAN}logs${RESET} [service]             View logs (all services or one)"
     echo "  ${CYAN}stop${RESET}                       Stop all local services"
     exit 0
@@ -434,6 +439,12 @@ case "${1:-}" in
                 exit 1
                 ;;
         esac
+        ;;
+    colleague)
+        # Delegates to scripts/colleague.sh — creates the LiteLLM key, the
+        # Open WebUI account and the model access grants in one pass.
+        shift
+        IDIA_PROG="./idia colleague" exec "$SCRIPTS_DIR/colleague.sh" "$@"
         ;;
     logs)          _logs  "${2:-}" ;;
     stop)          _stop ;;
