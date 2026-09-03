@@ -38,3 +38,7 @@ Thumbs.db
 # at deploy time and must NOT be committed (they change per deployment).
 rendered_serve_config.yaml
 rendered_litellm_config.yaml
+
+# Governança do repositório — o portão local e a exigência de vizinhança
+# pertencem ao repo, não à máquina. Worktrees, não.
+.claude/worktrees/

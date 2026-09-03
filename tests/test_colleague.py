@@ -259,3 +259,57 @@ class TestIdiaColleagueRouting:
         )
         assert result.returncode == 0, result.stderr
         assert "unbound variable" not in result.stderr
+
+
+# ── One tier vocabulary (issue #6) ──────────────────────────────────────
+
+
+class TestSingleTierVocabulary:
+    """There must be exactly one definition of what a tier means.
+
+    Two used to coexist: create_user.sh knew hard/regular/light, colleague.sh
+    knew light/regular/heavy/classroom. 'hard' and 'heavy' were the same idea
+    under different names, 'regular' meant 4 RPM in one and 60 in the other,
+    and the create_user.sh path passed no limits to /key/generate at all — so
+    the tiers it advertised were never applied to anything.
+    """
+
+    TIERS = ("light", "regular", "heavy", "classroom")
+
+    def test_legacy_script_is_gone(self, repo_root: Path) -> None:
+        assert not (repo_root / "scripts" / "create_user.sh").exists(), (
+            "the second, limitless key-creation path must not come back"
+        )
+
+    def test_cli_delegates_to_colleague(self, repo_root: Path) -> None:
+        code = _code_lines(repo_root / "idia")
+        assert not [ln for ln in code if "create_user.sh" in ln], "still invokes the old script"
+        assert any("colleague.sh" in ln for ln in code)
+
+    def test_usage_lists_the_real_tiers(self, repo_root: Path) -> None:
+        result = subprocess.run(
+            ["bash", str(repo_root / "idia"), "user", "create"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode != 0
+        out = result.stdout + result.stderr
+        for tier in self.TIERS:
+            assert tier in out, f"usage does not offer '{tier}'"
+
+    def test_legacy_hard_maps_to_heavy(self, repo_root: Path) -> None:
+        """Old muscle memory should keep working, loudly rather than silently."""
+        result = subprocess.run(
+            ["bash", str(repo_root / "idia"), "user", "create", "alice", "hard"],
+            capture_output=True, text=True, timeout=15,
+        )
+        out = result.stdout + result.stderr
+        assert "heavy" in out, "'hard' must be mapped, and the mapping announced"
+
+    def test_tiers_defined_in_exactly_one_place(self, repo_root: Path) -> None:
+        """Only colleague.sh may enumerate tier budgets and limits."""
+        definers = []
+        for path in sorted((repo_root / "scripts").glob("*.sh")):
+            code = _code_lines(path)
+            if any("TIER_BUDGET=" in line for line in code):
+                definers.append(path.name)
+        assert definers == ["colleague.sh"], f"tier definitions found in {definers}"

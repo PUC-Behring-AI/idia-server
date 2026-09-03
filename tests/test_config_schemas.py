@@ -11,6 +11,7 @@ yet (later phase), so this module is safe to run from Phase 1 onward.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -133,41 +134,56 @@ class TestDockerCompose:
         assert "shm_size" in svc, "ray-head needs shm_size set"
 
 
-# ── config.yaml (LiteLLM) (§4.3) ───────────────────────────────────────
+# ── LiteLLM config (§4.3) ──────────────────────────────────────────────
+# There is no config.yaml on disk to validate. LiteLLM consumes
+# rendered_litellm_config.yaml, which render_config.py builds from a dict in
+# code — so the assertions run against that function's output, which is what
+# the container actually receives. A file used to sit at the repo root looking
+# canonical while nothing read it; issue #10 records what that cost.
 
 LITELLM_REQUIRED_KEYS = ["model_list", "general_settings"]
 
 
 @pytest.mark.config
 class TestLiteLLMConfig:
-    """config.yaml (LiteLLM) structure per §4.3."""
+    """The generated LiteLLM config, per §4.3."""
 
     @pytest.fixture
-    def config(self, config_files: dict[str, Path]) -> dict | None:
-        return _read_yaml(config_files["config_litellm"])
+    def config(self, repo_root: Path) -> dict:
+        sys.path.insert(0, str(repo_root))
+        try:
+            from scripts.render_config import render_litellm_config
+        finally:
+            sys.path.pop(0)
+        rendered = render_litellm_config(
+            overrides={"MODEL_ID": "test-model", "MODEL_SOURCE": "test-org/test-model"}
+        )
+        return yaml.safe_load(rendered)
 
-    def test_exists(self, config: dict | None) -> None:
-        if config is None:
-            pytest.skip("config.yaml not created yet (Phase 2)")
-        assert isinstance(config, dict)
-
-    def test_has_required_keys(self, config: dict | None) -> None:
-        if config is None:
-            pytest.skip("config.yaml not created yet")
+    def test_has_required_keys(self, config: dict) -> None:
         for key in LITELLM_REQUIRED_KEYS:
             assert key in config, f"Missing required key: {key}"
 
-    def test_model_list_has_entries(self, config: dict | None) -> None:
-        if config is None:
-            pytest.skip("config.yaml not created yet")
-        model_list = config.get("model_list", [])
-        assert len(model_list) > 0, "model_list must have at least one entry"
+    def test_model_list_has_entries(self, config: dict) -> None:
+        assert len(config.get("model_list", [])) > 0, "model_list must have at least one entry"
 
-    def test_general_settings_has_master_key(self, config: dict | None) -> None:
-        if config is None:
-            pytest.skip("config.yaml not created yet")
-        gs = config.get("general_settings", {})
-        assert "master_key" in gs, "general_settings must declare master_key source"
+    def test_models_route_to_ray_ingress(self, config: dict) -> None:
+        for entry in config["model_list"]:
+            assert entry["litellm_params"]["api_base"] == "http://ray-head:8000/v1"
+
+    def test_master_key_is_an_env_reference(self, config: dict) -> None:
+        """The rendered file lands on disk — the key must stay a reference."""
+        master = config.get("general_settings", {}).get("master_key", "")
+        assert master.startswith("os.environ/"), (
+            f"master_key must be an env reference, got {master!r}"
+        )
+
+    def test_no_stale_config_yaml_at_repo_root(self, repo_root: Path) -> None:
+        """A second file that looks canonical and is never read (issue #10)."""
+        assert not (repo_root / "config.yaml").exists(), (
+            "config.yaml is not consumed by anything — delete it rather than "
+            "let it drift out of step with _render_litellm_config()"
+        )
 
 
 # ── prometheus.yml (§10.2) ──────────────────────────────────────────────

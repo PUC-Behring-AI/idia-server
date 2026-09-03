@@ -38,7 +38,6 @@ def config_files(repo_root: Path) -> dict[str, Path]:
         "dockerfile_ray": repo_root / "Dockerfile.ray",
         "serve_config": repo_root / "serve_config.yaml",
         "docker_compose": repo_root / "docker-compose.yml",
-        "config_litellm": repo_root / "config.yaml",
         "prometheus": repo_root / "prometheus.yml",
         "env_example": repo_root / ".env.example",
     }

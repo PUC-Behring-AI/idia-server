@@ -172,7 +172,9 @@ serve.run(app)
 
 LiteLLM treats Ray Serve's ingress as a custom OpenAI-compatible provider: the provider token is `openai` (meaning "speak the OpenAI protocol to this base URL"), and everything after the first `/` is the model identifier passed through to the backend.
 
-The configuration is maintained in `config.yaml` at the repository root, rendered with env var substitution at runtime. The master key is injected via `${LITELLM_MASTER_KEY}` (required — no fallback; see SEC-01).
+**A configuração não é um arquivo editável.** O `render_config.py` monta o dict em código e escreve `rendered_litellm_config.yaml`, que é o que o container consome. Um `config.yaml` existiu na raiz por algum tempo, com aparência de fonte canônica e sem nenhum leitor — o preço disso está na issue #10. Para mudar o roteamento, edite `_render_litellm_config()`.
+
+A master key permanece como `os.environ/LITELLM_MASTER_KEY` — a sintaxe nativa de referência do LiteLLM — para que o valor real nunca seja escrito no arquivo renderizado (SEC-01).
 
 ```yaml
 model_list:
@@ -202,7 +204,7 @@ litellm_settings:
 
 The `master_key` is validated by `render_config.py` (required env var). The `require_auth_for_metrics_endpoint` setting exists because LiteLLM 1.84.0+ changed the default to require authentication on the `/metrics` endpoint (PR #24600), breaking Prometheus scrape targets that do not send a bearer token. This flag restores public access — a safe default because LiteLLM's port 4000 is only reachable within the internal Compose network, not externally.
 
-For the full file, see `config.yaml` at the repository root. For client consumption patterns, see §8.
+Para a estrutura exata, veja `_render_litellm_config()` em `scripts/render_config.py` e as asserções em `tests/test_config_schemas.py::TestLiteLLMConfig`. Para os padrões de consumo pelo cliente, veja §8.
 
 ---
 
@@ -215,13 +217,12 @@ inference-server/
 ├── Dockerfile.ray         # builds the Ray Serve LLM image
 ├── serve_config.yaml      # Ray Serve application config (models, autoscaling)
 ├── docker-compose.yml     # local / single-EC2 orchestration
-├── config.yaml            # LiteLLM model routing
+├── rendered_litellm_config.yaml  # gerado; LiteLLM lê este (§4.3)
 ├── .env                   # secrets, not committed
 ├── prometheus.yml         # monitoring, §10
 └── scripts/
     ├── render_config.py   # entrypoint — renders both configs, §5.6
     ├── colleague.sh       # user provisioning, §5.8
-    ├── create_user.sh     # legacy key-only path — see issue #6
     ├── smoke_test.sh      # post-deploy verification
     ├── setup_environment.sh
     ├── install_service.sh # systemd, §6.4
@@ -388,13 +389,13 @@ GRAFANA_ADMIN_PASSWORD=      # required if Grafana is enabled (see §5.4)
 | Variable | Required | Type | Default | Used by |
 |----------|----------|------|---------|---------|
 | `HF_TOKEN` | Yes | str | — | `Dockerfile.ray` → HuggingFace Hub |
-| `LITELLM_MASTER_KEY` | Yes | str | — | `config.yaml` (LiteLLM) |
+| `LITELLM_MASTER_KEY` | Yes | str | — | LiteLLM, via `os.environ/` (§4.3) |
 | `MODEL_ID` | Yes | str | — | `serve_config.yaml` (Ray) |
 | `MODEL_SOURCE` | Yes | str | — | `serve_config.yaml` (Ray) |
 | `MAX_MODEL_LEN` | No | int | 8192 | `serve_config.yaml` (vLLM engine_kwargs) |
 | `GPU_MEMORY_UTILIZATION` | No | float | 0.9 | `serve_config.yaml` (vLLM engine_kwargs) |
-| `GPU_COUNT` | No | int | 1 | `render_config.py` (multi-model VRAM budget check, T4.1) |
-| `GPU_VRAM_GB` | No | float | 24.0 | `render_config.py` (multi-model VRAM budget check, T4.1) |
+| `GPU_COUNT` | No | int | 1 | `render_config.py` (orçamento de VRAM dos modelos residentes) |
+| `GPU_VRAM_GB` | No | float | 24.0 | `render_config.py` (validação de faixa) |
 | `GRAFANA_ADMIN_PASSWORD` | Yes* | str | — | `docker-compose.yml` (Grafana) |
 | `RAY_SHM_SIZE` | No | str | 4gb | `docker-compose.yml` (ray-head shm_size) |
 | `RAY_MEMORY_LIMIT` | No | str | 16g | `docker-compose.yml` (ray-head deploy.limits.memory) |
@@ -441,14 +442,14 @@ on `serve_config.yaml` before delegating to Ray Serve.
     - `MAX_MODEL_LEN`: positive integer
     - `GPU_COUNT`: positive integer (≥ 1)
     - `GPU_VRAM_GB`: positive float
-    - **VRAM budget (T4.1):** in multi-model mode, checks that `MODELS_COUNT × GPU_MEMORY_UTILIZATION ≤ GPU_COUNT`. If exceeded, exits with diagnostic. This prevents silently scheduling 3 models on 1 GPU at 90% utilization each (would OOM).
+    - **Orçamento de VRAM:** soma `GPU_MEMORY_UTILIZATION` apenas dos modelos **residentes** (`MODEL_N_MIN_REPLICAS >= 1`) e recusa se passar de `GPU_COUNT`. Modelos em scale-to-zero não entram na conta: eles não ocupam VRAM até uma requisição acordá-los, e o Ray os descarrega quando ficam ociosos. A fórmula anterior multiplicava a utilização pelo total de modelos e recusava cinco modelos sob demanda em uma GPU — exatamente o deployment para o qual este projeto foi feito.
 5. Handle `##LLM_CONFIGS##` marker:
    - **Multi-model**: generate N `llm_config` entries from `MODEL_N_ID`/
      `MODEL_N_SOURCE`, replace marker with generated YAML, remove fallback
      single-model entry.
    - **Single-model**: remove marker, keep fallback entry for backward
      compatibility.
-6. Substitute `${VAR}` placeholders using regex `\$\{(\w+)\}`. Values
+6. Substitui os placeholders `${VAR}` com a regex `\$\{(\w+)\}`, e **recusa se sobrar algum sem valor**, listando os nomes. Um `${VAR}` remanescente é YAML válido — vira a string literal `"${VAR}"` — e só `model_id` e `model_source` são conferidos adiante, então um typo em qualquer outro campo chegava ao engine como texto e falhava longe da causa. Values
    containing YAML special characters (`:`, `{`, `}`, `\n`, `#`) are
    automatically escaped as quoted YAML scalars via `_escape_yaml_value()`
    to prevent YAML injection (SEC-06).
@@ -633,7 +634,7 @@ Consume via the OpenAI SDK — no vLLM-, Ray-, or LiteLLM-specific code:
 from openai import OpenAI
 client = OpenAI(base_url="http://<host>:4000", api_key="sk-12...")
 resp = client.chat.completions.create(
-    model="mistral-7b",          # = model_name in config.yaml
+    model="mistral-7b",          # = MODEL_ID no .env
     messages=[{"role": "user", "content": "Explain PagedAttention in one sentence."}],
     stream=True,
 )
@@ -925,7 +926,7 @@ Ray Serve LLM's model multiplexing loads adapters on demand and evicts them LRU 
 
 ### 12.4 Exposing a fine-tuned variant
 
-A fine-tuned variant becomes a second entry in `llm_configs` (or a multiplexed adapter under the same base entry) plus a second `model_name` in LiteLLM's `config.yaml` pointing at the same Ray ingress. Clients select it by changing the `model` field — same endpoint, same key, same SDK call shape as §8.
+A fine-tuned variant becomes a second entry in `llm_configs` (or a multiplexed adapter under the same base entry) e, no LiteLLM, uma segunda entrada gerada por `_render_litellm_config()` apontando para o mesmo ingress do Ray. Clients select it by changing the `model` field — same endpoint, same key, same SDK call shape as §8.
 
 ---
 
@@ -1076,7 +1077,7 @@ A change in any of the following *requires* an update to this document:
 - `Dockerfile.ray` — base image, dependencies, entrypoint
 - `serve_config.yaml` — models, autoscaling, `engine_kwargs`
 - `docker-compose.yml` — services, ports, networks, volumes, GPU config
-- `config.yaml` — LiteLLM routing, model list, health checks
+- `scripts/render_config.py` — `_render_litellm_config()`, onde o roteamento do LiteLLM é definido
 - `prometheus.yml` — scrape targets, alert rules
 - Any test file in `tests/` that introduces a new test category (docs, config,
   integration, security)
@@ -1161,6 +1162,8 @@ envolve trade-offs significativos entre múltiplas alternativas viáveis.
 
 | 2026-09-03 | PostgreSQL e Open WebUI no Compose — (§5.4 reescrita: a cópia embutida do docker-compose.yml dá lugar a uma tabela de serviços mais as decisões que o arquivo carrega; §5.7 Open WebUI passa a ser serviço e não mais `docker run`); `docker-compose.yml`: serviços `postgres` e `open-webui`, `DATABASE_URL`, `UI_USERNAME`/`UI_PASSWORD`, cache HF movido de /root para /home/ray com HF_HOME correspondente, volumes `postgres_data` e `webui_data`, segredos com `${VAR:?}`; `.env.example`: POSTGRES_PASSWORD, UI_USERNAME, UI_PASSWORD; ADR-012 (banco local vs RDS) e ADR-013 (interface no Compose e a exceção da porta 3001); `tests/test_stack_services.py` (20 testes); `test_security.py`: a guarda de portas passa a permitir 3001 citando o ADR. | O gateway não conseguia emitir uma única virtual key: sem banco, `/key/generate` não tinha onde persistir, e toda a premissa multiusuário da §1 era falsa. A interface de chat vivia fora do ciclo de vida da stack e não voltava depois de um reboot. |
 
+| 2026-09-03 | Defeitos do backlog — (§4.3 config do LiteLLM deixa de ser arquivo editável: `config.yaml` removido da raiz, a fonte é `_render_litellm_config()`; §5.1 layout; §5.6 orçamento de VRAM passa a contar só modelos residentes, e placeholder sem valor passa a ser fatal); `idia`: endpoint de health unificado em `/health/liveliness` e definido uma vez, `user create` delega ao `colleague.sh`; `scripts/create_user.sh` removido; `scripts/smoke_test.sh`: mesmo endpoint; testes: `TestLiteLLMConfig` e `TestTrustBoundaries` repontados para a saída gerada, `TestHealthEndpointConsistency`, `TestSingleTierVocabulary`, orçamento de VRAM reescrito por residência, `test_setup_runs` marcado por plataforma. | Fecha #6, #8, #10, #13 e #16. A suíte passa a fechar verde na máquina do mantenedor, o que é pré-requisito para armar o portão local. |
+
 ---
 
-*Document version: 2.8 | Last updated: 2026-09-03 | Sections changed: 5.4, 5.7, Structural Change History*
+*Document version: 2.9 | Last updated: 2026-09-03 | Sections changed: 4.3, 5.1, 5.6, Structural Change History*

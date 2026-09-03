@@ -866,8 +866,8 @@ pytest tests/ -m "config or docs or security" -v
 ### "model not found" em todas as requisições
 
 **Causa:** `docker compose up` foi executado diretamente, sem pre-renderizar
-os configs. O `config.yaml` do LiteLLM contém `${MODEL_ID}` como texto
-literal, e o LiteLLM tenta rotear para um modelo chamado `"${MODEL_ID}"`.
+os configs. O `rendered_litellm_config.yaml` não existe ou está velho, e o
+LiteLLM sobe sem saber rotear para o modelo que o `.env` declara.
 
 **Solução:**
 ```bash

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -206,6 +207,11 @@ class TestSetupSubcommand:
         )
         assert "setup" in result.stdout.lower()
 
+    @pytest.mark.skipif(
+        sys.platform != "linux",
+        reason="setup_environment.sh installs Docker via apt and configures systemd — "
+        "it refuses to run anywhere else, by design",
+    )
     def test_setup_runs(self, repo_root: Path) -> None:
         """./idia setup exits 0 on an already-configured machine."""
         result = subprocess.run(
@@ -214,3 +220,74 @@ class TestSetupSubcommand:
         )
         assert result.returncode == 0
         assert "complete" in result.stdout.lower() or "passed" in result.stdout.lower()
+
+    @pytest.mark.skipif(sys.platform == "linux", reason="Linux is the supported platform")
+    def test_setup_refuses_cleanly_off_linux(self, repo_root: Path) -> None:
+        """Off Linux the script must refuse, and say why.
+
+        The refusal is correct — what was wrong was a test demanding success
+        where success is impossible, which left the suite red on the
+        maintainer's own machine and hid real regressions in the noise.
+        """
+        result = subprocess.run(
+            ["bash", str(repo_root / "idia"), "setup"],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode != 0
+        assert "linux" in (result.stdout + result.stderr).lower()
+
+
+@pytest.mark.config
+class TestHealthEndpointConsistency:
+    """Every health probe in the repo must hit the public endpoint.
+
+    LiteLLM's `/health` requires a bearer token whenever `master_key` is set,
+    and it always is. An unauthenticated probe there gets 401, which `curl -sf`
+    reports as failure — so `./idia deploy local` waited out its full 600s
+    timeout on a server that was healthy the whole time, then blamed VRAM and
+    HF_TOKEN. `/health/liveliness` is public.
+
+    docker-compose.yml already used the public endpoint; the CLI and the smoke
+    test did not. This asserts all three agree.
+    """
+
+    PROBES = ("idia", "scripts/smoke_test.sh", "docker-compose.yml")
+
+    # Only LiteLLM's /health needs a token. Open WebUI serves its own /health
+    # on 8080 with no auth, so the check is scoped to the gateway.
+    LITELLM_MARKERS = (":4000", "LITELLM_URL", "BASE_URL")
+
+    @staticmethod
+    def _code_lines(path: Path) -> list[tuple[int, str]]:
+        return [
+            (n, line)
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            if not line.lstrip().startswith("#")
+        ]
+
+    def test_no_unauthenticated_bare_health_probe(self, repo_root: Path) -> None:
+        offenders: list[str] = []
+        for rel in self.PROBES:
+            path = repo_root / rel
+            if not path.is_file():
+                continue
+            for lineno, line in self._code_lines(path):
+                if "/health" not in line or "/health/liveliness" in line:
+                    continue
+                if any(marker in line for marker in self.LITELLM_MARKERS):
+                    offenders.append(f"{rel}:{lineno}: {line.strip()}")
+        assert not offenders, "bare /health probe on LiteLLM (needs auth):\n" + "\n".join(offenders)
+
+    def test_cli_defines_the_endpoint_once(self, repo_root: Path) -> None:
+        """One definition, so the next caller cannot pick the wrong one."""
+        source = (repo_root / "idia").read_text(encoding="utf-8")
+        assert "LITELLM_HEALTH_URL=" in source
+        uses = [
+            line
+            for _, line in self._code_lines(repo_root / "idia")
+            if "/health/liveliness" in line
+        ]
+        assert len(uses) == 1, (
+            "the endpoint should be built once and reused via $LITELLM_HEALTH_URL, "
+            f"found: {uses}"
+        )

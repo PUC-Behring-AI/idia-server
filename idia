@@ -25,16 +25,17 @@
 #   ./idia stop                         Stop all local services
 #   ./idia --help                       This message
 #
-# Tier levels for user create:
-#   hard      15 RPM / 50k TPM  (researchers, heavy users)
-#   regular    4 RPM / 15k TPM  (graduate students, regular users)
-#   light      1 RPM /  5k TPM  (undergrads, casual users)
+# Tier levels (see ./idia colleague tiers for the authoritative list):
+#   light      $0.50/day, 10 RPM  (visitor, intern)
+#   regular    $2/day,    60 RPM  (researcher, daily use)
+#   heavy      $10/day,   no RPM cap (senior researcher)
+#   classroom  $20/day,  300 RPM  (30+ students)
 #
 # Examples:
 #   ./idia deploy local                     # Start server (first time: ~15 min)
 #   ./idia deploy local --dry-run           # Validate config without starting
-#   ./idia user create alice hard           # Create key for Alice (researcher)
-#   ./idia user create bob regular          # Create key for Bob (grad student)
+#   ./idia user create alice heavy          # API key only, senior researcher tier
+#   ./idia colleague create ana@idia.org "Ana"   # Key + Open WebUI account
 #   ./idia status                           # Check everything is healthy
 #   ./idia logs litellm                     # Debug LiteLLM issues
 #   ./idia stop                             # Shut down server
@@ -50,6 +51,12 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS_DIR="$REPO_DIR/scripts"
 ENV_FILE="$REPO_DIR/.env"
+
+# LiteLLM health endpoint. /health/liveliness is public; /health (no suffix)
+# requires a bearer token whenever master_key is set — which it always is —
+# so probing it unauthenticated returns 401 and reads as "server down".
+LITELLM_URL="http://localhost:${LITELLM_PORT:-4000}"
+LITELLM_HEALTH_URL="${LITELLM_URL}/health/liveliness"
 
 # ── Colours ─────────────────────────────────────────────────────────────────
 
@@ -79,7 +86,7 @@ _help() {
     echo "  ${CYAN}service uninstall${RESET}             Remove systemd service"
     echo "  ${CYAN}service status${RESET}                Show systemd or compose status"
     echo "  ${CYAN}status${RESET}                       Show service health and loaded models"
-    echo "  ${CYAN}user create${RESET} <name> <tier>  Create a LiteLLM virtual key for a user"
+    echo "  ${CYAN}user create${RESET} <name> <tier>  Create an API-only virtual key"
     echo "  ${CYAN}user list${RESET}                  List all active virtual keys"
     echo "  ${CYAN}colleague${RESET} <subcommand>     Provision a colleague (key + Open WebUI account)"
     echo "  ${CYAN}logs${RESET} [service]             View logs (all services or one)"
@@ -238,7 +245,7 @@ _deploy_local() {
     fi
 
     # Step 4: Wait for LiteLLM health
-    if ! _wait_for_health "http://localhost:4000/health" 600; then
+    if ! _wait_for_health "$LITELLM_HEALTH_URL" 600; then
         exit 1
     fi
 
@@ -254,7 +261,7 @@ _deploy_local() {
     # Done
     echo ""
     _banner "Server Running"
-    echo "  ${BOLD}API endpoint:${RESET}  http://localhost:4000"
+    echo "  ${BOLD}API endpoint:${RESET}  $LITELLM_URL"
     echo "  ${BOLD}Grafana:${RESET}       http://localhost:3000  (admin / \$GRAFANA_ADMIN_PASSWORD)"
     echo ""
     echo "${BOLD}Next steps:${RESET}"
@@ -278,9 +285,9 @@ _status() {
 
     echo "${BOLD}LiteLLM health:${RESET}"
     local health_resp
-    health_resp=$(curl -sf --max-time 5 "http://localhost:4000/health" 2>/dev/null || echo "UNREACHABLE")
+    health_resp=$(curl -sf --max-time 5 "$LITELLM_HEALTH_URL" 2>/dev/null || echo "UNREACHABLE")
     if [ "$health_resp" = "UNREACHABLE" ]; then
-        _warn "LiteLLM not reachable at http://localhost:4000 — is the server running?"
+        _warn "LiteLLM not reachable at $LITELLM_URL — is the server running?"
     else
         _info "LiteLLM is healthy"
     fi
@@ -290,7 +297,7 @@ _status() {
     local models_resp
     models_resp=$(curl -sf --max-time 5 \
         -H "Authorization: Bearer ${LITELLM_MASTER_KEY:-}" \
-        "http://localhost:4000/v1/models" 2>/dev/null || echo "")
+        "${LITELLM_URL}/v1/models" 2>/dev/null || echo "")
     if [ -z "$models_resp" ]; then
         _warn "Could not fetch model list (server may still be loading)"
     else
@@ -316,22 +323,31 @@ _status() {
 # ── User management ──────────────────────────────────────────────────────────
 
 _user_create() {
+    # Delegates to colleague.sh, which is the single implementation of tiers.
+    # There used to be a second one in create_user.sh with its own vocabulary
+    # (hard/regular/light) that passed no limits at all to /key/generate — the
+    # tiers it advertised were never applied. See issue #6.
     local name="${1:-}"
     local tier="${2:-regular}"
-    local endpoint="${3:-http://localhost:4000}"
 
     if [ -z "$name" ]; then
-        _error "Usage: ./idia user create <name> <tier> [endpoint]"
-        echo "  tier options: hard | regular | light"
+        _error "Usage: ./idia user create <name> <tier>"
+        echo "  tier options: light | regular | heavy | classroom"
+        echo "  For a full account (key + Open WebUI):  ./idia colleague create <email> <name>"
         exit 1
     fi
 
-    _load_env
-    "$SCRIPTS_DIR/create_user.sh" "$name" "$tier" "$endpoint"
+    # 'hard' was the old name for what is now 'heavy'. Accepted, with notice.
+    if [ "$tier" = "hard" ]; then
+        _warn "Tier 'hard' was renamed to 'heavy' — using 'heavy'."
+        tier="heavy"
+    fi
+
+    IDIA_PROG="./idia user create" exec "$SCRIPTS_DIR/colleague.sh" key "$name" --tier "$tier"
 }
 
 _user_list() {
-    local endpoint="${1:-http://localhost:4000}"
+    local endpoint="${1:-$LITELLM_URL}"
     _load_env
 
     echo "${BOLD}Active virtual keys:${RESET}"
