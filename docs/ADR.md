@@ -214,3 +214,107 @@ PyTorch, Kubernetes, e pela maioria dos projetos de infraestrutura de IA.
 + compatibilidade com projetos de IA existentes (Apache 2.0 é a licença
 padrão do ecossistema), + permite uso acadêmico e comercial; - não é
 copyleft (alterações podem ser fechadas)]
+
+---
+
+## ADR-009: Visibilidade de modelos no Open WebUI — padrão override + access grants
+**Data:** 2026-09-03 | **Fase:** Provisionamento | **Status:** Accepted
+
+**Contexto:** Era preciso dar aos colegas uma interface web com autenticação
+individual, mostrando no dropdown apenas os modelos que cada pessoa pode usar.
+
+O `get_all_models()` do Open WebUI (`utils/models.py`) tem dois branches para
+entradas na tabela `model`:
+
+```python
+if custom_model.base_model_id is None:    # OVERRIDE
+    model['info'] = custom_model.model_dump()
+elif custom_model.is_active:              # DERIVED
+    if custom_model.id in existing_ids: continue   # ← silencioso
+```
+
+Com `base_model_id` preenchido, o código toma o branch "derived", faz
+`continue`, e `model['info']` nunca é populado. O `get_filtered_models()`
+então vê `model_info=None` e esconde o modelo de todo mundo que não seja
+admin — sem erro, sem log, sem pista.
+
+Descobrir isso custou uma sessão inteira: as entradas tinham sido criadas
+com `base_model_id` igual ao próprio `id`, o que parecia razoável e era
+exatamente o que ativava o branch errado. `user_id=NULL` agravava, falhando
+a validação Pydantic (`ModelModel.user_id: str`, obrigatório).
+
+**Decisão:**
+
+1. Uma entrada na tabela `model` por modelo configurado, com
+   `base_model_id = NULL` (ativa o branch "override") e
+   `user_id = <uuid do admin>` (satisfaz o Pydantic).
+2. Tabela `access_grant`: uma linha por usuário × modelo autorizado,
+   com `permission = 'read'`.
+3. O `colleague.sh` mantém as duas tabelas no passo [5/6], recriando os
+   grants a cada provisionamento e apagando-os no revoke.
+4. O LiteLLM permanece como segunda camada: a virtual key também lista os
+   modelos permitidos, então esconder no dropdown não é o único controle.
+
+**Alternativa descartada:** `BYPASS_MODEL_ACCESS_CONTROL=true`. Todos veem
+todos os modelos. Rejeitada porque remove o controle de visibilidade por
+completo — o dropdown fica poluído de modelos inacessíveis, e a pessoa
+descobre a restrição só quando a requisição falha.
+
+**Consequências:** [+ dropdown mostra apenas o que a pessoa pode usar;
++ grants gerenciados automaticamente, sem passo manual; + revoke limpa tudo,
+sem lixo acumulado; − dependência do schema interno do SQLite do Open WebUI,
+que pode mudar entre versões — o teste de provisionamento é o que detecta]
+
+---
+
+## ADR-010: Provisionamento de usuários via colleague.sh
+**Data:** 2026-09-03 | **Fase:** Provisionamento | **Status:** Accepted
+
+**Contexto:** Dar acesso a um colega envolvia três sistemas e três passos
+manuais: criar a virtual key no LiteLLM, criar a conta no Open WebUI, e
+vincular a chave à conta. Cada passo tinha seu próprio jeito de falhar
+silenciosamente, e o resultado parcial não era visível em lugar nenhum.
+
+O requisito era simples de enunciar: o admin roda um comando, a pessoa
+recebe um e-mail e uma senha, e tudo funciona.
+
+**Decisão:** Um script (`scripts/colleague.sh`), seis passos, um comando:
+
+| Passo | Ação |
+|---|---|
+| [1/6] | Apaga qualquer key LiteLLM com o mesmo alias |
+| [2/6] | Cria a virtual key (tier, budget, rate limits, modelos) |
+| [3/6] | Cria a conta no Open WebUI, ou atualiza a senha se já existir |
+| [4/6] | Vincula a chave na tabela `api_key` (`key_{user_id}`) |
+| [5/6] | Garante as entradas de `model` e recria os `access_grant` (ADR-009) |
+| [6/6] | Grava a config global do dropdown |
+
+O `revoke` desfaz os cinco artefatos: key, grants, api_key, auth e usuário.
+
+Três propriedades foram escolhidas deliberadamente:
+
+- **Valores chegam ao Python por `argv`, nunca por interpolação no fonte.**
+  A versão anterior montava código Python concatenando strings do bash; um
+  sobrenome com apóstrofo produzia `SyntaxError` no meio do provisionamento,
+  deixando uma key órfã. Os heredocs usam delimitador entre aspas (`<<'PY'`),
+  então o bash não expande nada dentro deles.
+- **Nenhum segredo ou endereço no código.** `IDIA_PUBLIC_HOST` e
+  `OWUI_DISCOVERY_KEY` vêm do `.env`. A versão anterior carregava ambos como
+  literais, prestes a serem publicados no primeiro push.
+- **Sem arrays associativos.** Os tiers são um `case`, não `declare -A`, para
+  que o script rode no bash 3.2 do macOS e possa ser testado fora do servidor.
+
+Os modelos de cada tier vêm da configuração do servidor (`MODEL_ID` ou
+`MODELS_COUNT`/`MODEL_N_ID`), não de uma lista fixa. Isso evita a deriva em
+que o script anunciava modelos que o servidor não servia mais.
+
+**Alternativa descartada:** integração OAuth/SSO entre Open WebUI e LiteLLM.
+Ambos suportam OAuth, mas o mapeamento de usuários entre os dois exigiria
+middleware próprio — complexidade desproporcional para provisionar dezenas
+de pessoas, não milhares.
+
+**Consequências:** [+ provisionamento em um comando; + revoke completo, sem
+resíduo; + testável sem Docker e sem servidor (`--dry-run`, `tiers`);
+− manipulação direta do SQLite do Open WebUI (ver ADR-009);
+− dois caminhos de criação de usuário convivem enquanto `create_user.sh`
+existir — ver issue #6]

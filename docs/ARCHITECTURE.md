@@ -217,7 +217,15 @@ inference-server/
 ├── docker-compose.yml     # local / single-EC2 orchestration
 ├── config.yaml            # LiteLLM model routing
 ├── .env                   # secrets, not committed
-└── prometheus.yml         # monitoring, §10
+├── prometheus.yml         # monitoring, §10
+└── scripts/
+    ├── render_config.py   # entrypoint — renders both configs, §5.6
+    ├── colleague.sh       # user provisioning, §5.8
+    ├── create_user.sh     # legacy key-only path — see issue #6
+    ├── smoke_test.sh      # post-deploy verification
+    ├── setup_environment.sh
+    ├── install_service.sh # systemd, §6.4
+    └── uninstall_service.sh
 ```
 
 ### 5.2 `Dockerfile.ray`
@@ -508,6 +516,76 @@ launching Ray Serve — used by `tests/test_integration.py`.
 **Dependency declaration:** `import yaml` requires `pyyaml>=6.0,<7.0` declared
 in `pyproject.toml` (INFRA-03). Previously relied on Ray's transitive
 inclusion, which left the version unspecified.
+
+---
+
+### 5.7 Open WebUI — interface de chat
+
+O Open WebUI é a interface que os usuários do instituto abrem. Ele fala com o
+LiteLLM como um backend OpenAI-compatível qualquer.
+
+> **Ainda fora do `docker-compose.yml`.** Hoje o container é criado à mão e
+> não participa do ciclo de vida da stack — sem healthcheck, sem restart
+> automático, ausente do `./idia status`. Ver issue #11.
+
+```bash
+docker run -d --name idia-webui --network idia-server_default \
+  -p 3001:8080 -v idia_webui_data:/app/backend/data \
+  -e WEBUI_AUTH=true -e ENABLE_SIGNUP=false \
+  -e OPENAI_API_BASE_URL=http://litellm:4000/v1 \
+  -e OPENAI_API_KEY="$OWUI_DISCOVERY_KEY" \
+  ghcr.io/open-webui/open-webui:main
+```
+
+`OWUI_DISCOVERY_KEY` vem do `.env` e é uma virtual key dedicada — usada
+apenas para **listar** os modelos disponíveis. Ela nunca deve ser uma chave
+de usuário, e nunca deve aparecer no código (ver issue #2).
+
+**Visibilidade por tier.** Cada modelo tem uma entrada na tabela `model` com
+`base_model_id = NULL`, e cada pessoa recebe um `access_grant` por modelo
+autorizado. O motivo dessa forma específica — e o branch silencioso do
+`get_all_models()` que torna qualquer outra invisível — está no ADR-009.
+
+**Rastreio por usuário.** Cada pessoa tem a própria virtual key na tabela
+`api_key` (`id = key_{user_id}`). O Open WebUI usa a chave da pessoa nas
+conversas e a `OWUI_DISCOVERY_KEY` apenas na descoberta, então o gasto é
+contabilizado individualmente no LiteLLM.
+
+### 5.8 Provisionamento de usuários — `scripts/colleague.sh`
+
+Um comando cria a pessoa inteira:
+
+```bash
+./idia colleague create joao@idia.org "João Silva" --tier regular
+```
+
+Seis passos: limpa chaves antigas do mesmo alias, cria a virtual key, cria
+(ou atualiza) a conta no Open WebUI, vincula a chave, configura a
+visibilidade dos modelos, e garante a config global do dropdown. O `revoke`
+desfaz os cinco artefatos. O desenho e as três decisões que o governam —
+`argv` em vez de interpolação, segredos fora do código, sem arrays
+associativos — estão no ADR-010.
+
+**Tiers:**
+
+| Tier | Budget | RPM | TPM | Uso |
+|------|--------|-----|-----|-----|
+| light | $0,50/dia | 10 | 5.000 | Visitante / estagiário |
+| regular | $2/dia | 60 | 30.000 | Pesquisador |
+| heavy | $10/dia | — | — | Pesquisador sênior |
+| classroom | $20/dia | 300 | 200.000 | Sala de aula (30+ alunos) |
+
+Os modelos concedidos são os que o servidor de fato serve (`MODEL_ID` ou
+`MODELS_COUNT`/`MODEL_N_ID` no `.env`); `--models` restringe a um
+subconjunto. Nenhum tier carrega uma lista fixa de modelos, justamente para
+não voltar a anunciar modelos que deixaram de existir.
+
+**Verificação sem servidor:** `--dry-run` mostra o plano sem criar nada, e
+`tiers` imprime as definições. Ambos rodam sem Docker e sem LiteLLM no ar —
+é o que `tests/test_colleague.py` exercita.
+
+**Admin UI:** o painel do LiteLLM em `http://<host>:4000/ui`
+(`UI_USERNAME` / `UI_PASSWORD` do `.env`) mostra chaves, gasto e uso.
 
 ---
 
@@ -1120,6 +1198,8 @@ envolve trade-offs significativos entre múltiplas alternativas viáveis.
 | 2026-07-28 | Simplification — removed AWS deployment (§7 Ray Cluster Launcher/KubeRay/budget protection deleted; kept §7 EC2 + Compose). Deleted cluster.yaml, deploy_cluster.sh, cache_models.sh, create_security_groups.sh, create_iam_node_role.sh, instance-role-policy.json, permission-set-cluster-admin.json, test_aws_floci.py, test_aws_scripts.py. Removed idia CLI deploy aws/cache subcommands. Cleaned pyproject.toml optional deps, tests/conftest.py AWS fixtures, test_config_schemas.py TestClusterYaml, test_security.py TestClusterSecurity, test_docs.py AWS references. DEPLOY.md §5 (Deploy na AWS) removed and sections renumbered. AGENTS.md updated. | Local-only simplification: user only needs Docker Compose; GPU autoscaling works on locally available GPUs; instance upgrade handles more power. |
 | 2026-07-28 | Boot-time startup — (§6.4 systemd service doc); new scripts/install_service.sh and scripts/uninstall_service.sh; idia CLI: service install/uninstall/status subcommands, --no-wait flag for deploy local. Systemd unit uses Type=oneshot + RemainAfterExit=yes to survive docker compose down. DEPLOY.md §3.7 added with persistence caveat. | Host reboot did not guarantee stack recovery — missing systemd integration. |
 
+| 2026-09-03 | Provisionamento de usuários — (§5.1 layout com scripts/; §5.7 Open WebUI: discovery key via env var, nota sobre ausência no compose; §5.8 colleague.sh: 6 passos, 4 tiers, modelos derivados do .env); novo `scripts/colleague.sh` (reescrito: argv em vez de interpolação, sem segredos no código, sem `declare -A`); `idia`: subcomando `colleague`; `.env.example`: IDIA_PUBLIC_HOST, OWUI_DISCOVERY_KEY, OWUI_CONTAINER, LITELLM_PORT, OWUI_PORT; ADR-009 (visibilidade de modelos) e ADR-010 (provisionamento); `tests/test_colleague.py` (23 testes). | Trazer o provisionamento de usuários para a linha principal, saneando as três falhas que o impediam: credencial em texto claro (#2), injeção de código via interpolação (#4) e incompatibilidade com bash 3.2 (#9). |
+
 ---
 
-*Document version: 2.5 | Last updated: 2026-07-28 | Sections changed: 6.4, 7, Structural Change History*
+*Document version: 2.6 | Last updated: 2026-09-03 | Sections changed: 5.1, 5.7, 5.8, Structural Change History*
