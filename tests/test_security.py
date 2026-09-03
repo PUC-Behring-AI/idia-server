@@ -31,34 +31,40 @@ class TestPortIsolation:
     See ARCHITECTURE.md §9.1.
     """
 
-    def test_only_4000_published(self, repo_root: Path) -> None:
-        """Only port 4000 is accessible externally.
+    def test_only_decided_ports_published(self, repo_root: Path) -> None:
+        """Only 4000 (API) and 3001 (Open WebUI) are reachable from the network.
 
-        Port 4000 is the sole externally published port. Services bound to
-        127.0.0.1 (localhost only, e.g. Grafana on 3000) are permitted.
-        All other ports (8000, 8265, 10001, 9090) must never appear.
+        4000 was the sole external port until the chat interface became a
+        Compose service. Publishing 3001 is a recorded exception, not drift —
+        ADR-013 states the reasoning and the reverse-proxy caveat. Adding a
+        third port is a decision, so it belongs in an ADR before it belongs
+        here.
+
+        Services bound to 127.0.0.1 (Grafana on 3000) are not network-reachable
+        and are permitted. See ARCHITECTURE.md §9.1.
         """
+        allowed = {"4000", "3001"}
         path = repo_root / "docker-compose.yml"
         if not path.exists():
             pytest.skip("docker-compose.yml not created yet")
         compose = yaml.safe_load(path.read_text(encoding="utf-8"))
         all_ports: list[str] = []
-        for svc_name, svc in compose.get("services", {}).items():
+        for svc in compose.get("services", {}).values():
             ports = svc.get("ports", [])
             if isinstance(ports, list):
-                all_ports.extend(p for p in ports if isinstance(p, str))
+                all_ports.extend(str(p) for p in ports)
         assert len(all_ports) > 0, "No ports published at all — check service config"
         for p in all_ports:
-            # Parse host:container format
-            parts = p.split(":")
-            host_part = parts[0]
-            # 127.0.0.1:3000:3000 — localhost-only, permitted
-            if host_part == "127.0.0.1":
+            # Resolve ${VAR:-default} before splitting: the colon inside that
+            # form is not a port separator.
+            resolved = re.sub(r"\$\{[A-Za-z_][A-Za-z0-9_]*:-([^}]*)\}", r"\1", p)
+            parts = resolved.split(":")
+            if parts[0] == "127.0.0.1":
                 continue
-            # "4000:4000" — the single external port, permitted
-            assert host_part == "4000", (
-                f"Port {host_part} is exposed in docker-compose.yml — "
-                f"only port 4000 should be publicly accessible (§9.1)"
+            host_part = parts[-2] if len(parts) >= 2 else parts[0]
+            assert host_part in allowed, (
+                f"Port {host_part} is exposed in docker-compose.yml — only "
+                f"{sorted(allowed)} may be network-reachable (§9.1, ADR-013)"
             )
 
     def test_ray_ingress_not_published(self, repo_root: Path) -> None:

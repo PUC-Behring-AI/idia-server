@@ -308,133 +308,65 @@ Ver `tests/test_engine_config.py` para a estrutura esperada da saída.
 
 ### 5.4 `docker-compose.yml`
 
-```yaml
-services:
-  ray-head:
-    build:
-      context: .
-      dockerfile: Dockerfile.ray
-    ipc: host
-    shm_size: "${RAY_SHM_SIZE:-4gb}"
-    volumes:
-      - idia_hf_cache:/root/.cache/huggingface
-    environment:
-      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
-      # Single-model (backward compatible)
-      - MODEL_ID=${MODEL_ID}
-      - MODEL_SOURCE=${MODEL_SOURCE}
-      # Multi-model: set MODELS_COUNT=N and MODEL_N_ID/MODEL_N_SOURCE (§5.3)
-      - MODELS_COUNT=${MODELS_COUNT:-}
-      - MODEL_1_ID=${MODEL_1_ID:-}
-      - MODEL_1_SOURCE=${MODEL_1_SOURCE:-}
-      - MODEL_2_ID=${MODEL_2_ID:-}
-      - MODEL_2_SOURCE=${MODEL_2_SOURCE:-}
-      - MODEL_3_ID=${MODEL_3_ID:-}
-      - MODEL_3_SOURCE=${MODEL_3_SOURCE:-}
-      - MAX_MODEL_LEN=${MAX_MODEL_LEN:-8192}
-      - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/metrics"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-    deploy:
-      resources:
-        limits:
-          memory: "${RAY_MEMORY_LIMIT:-16g}"
-        reservations:
-          memory: "${RAY_MEMORY_RESERVATION:-8g}"
-          devices:
-            - driver: nvidia
-              count: all              # all GPUs on the host — Ray distributes replicas across them itself
-              capabilities: [gpu]
-    restart: unless-stopped
-    # NO "ports:" mapping — dashboard (8265), ingress (8000) and client (10001)
-    # stay on the internal Compose network only. See §9.3.
+O arquivo é a fonte de verdade e não é reproduzido aqui — uma cópia colada
+neste documento é uma segunda definição que diverge na primeira alteração
+que alguém esquecer de espelhar. O que segue é o que a leitura do arquivo
+não entrega sozinha: por que cada peça está lá.
 
-  litellm:
-    image: docker.litellm.ai/berriai/litellm:v1.85.0
-    depends_on:
-      ray-head:
-        condition: service_healthy
-    ports:
-      - "4000:4000"                  # the only port exposed to the host
-    volumes:
-      - ./config.yaml:/app/config.yaml
-    environment:
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    command: ["--config=/app/config.yaml"]
-    restart: unless-stopped
+**Serviços**
 
-  prometheus:
-    image: prom/prometheus:v2.55.0
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.retention.time=15d'
-      - '--storage.tsdb.retention.size=5GB'
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-    deploy:
-      resources:
-        limits:
-          memory: "1g"               # prevent unbounded /prometheus growth
-    restart: unless-stopped
-    # NO ports: published — Prometheus is queried by Grafana on internal
-    # Compose network. For admin access: docker compose exec prometheus sh.
+| Serviço | Papel | Porta |
+|---|---|---|
+| `ray-head` | Ray Serve LLM + vLLM — os pesos e o KV cache | nenhuma publicada |
+| `postgres` | Banco do LiteLLM: virtual keys, spend, rate limits (ADR-012) | nenhuma publicada |
+| `litellm` | Gateway: auth, budgets, roteamento, spend tracking | **4000**, externa |
+| `open-webui` | Interface de chat dos usuários (ADR-013) | **3001**, externa |
+| `prometheus` | Coleta de métricas | nenhuma publicada |
+| `grafana` | Dashboards e alertas | 3000, apenas `127.0.0.1` |
+| `dcgm-exporter` | Métricas de GPU; perfil `gpu`, pulado sem NVIDIA | nenhuma publicada |
 
-  grafana:
-    image: grafana/grafana:11.4.0
-    depends_on:
-      - prometheus
-    ports:
-      - "127.0.0.1:3000:3000"       # localhost only — no external access
-    volumes:
-      - ./grafana/datasources:/etc/grafana/provisioning/datasources
-      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
-      - grafana_data:/var/lib/grafana
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
-    restart: unless-stopped
+Duas portas são alcançáveis pela rede: 4000 e 3001. Ray ingress (8000),
+dashboard (8265), client (10001), Prometheus (9090), PostgreSQL (5432) e
+DCGM (9400) nunca são publicadas — §9.2 explica o custo de furar isso.
+`tests/test_stack_services.py::TestPortSurface` falha se o conjunto mudar.
 
-volumes:
-  prometheus_data:
-    name: idia_prometheus_data
-  grafana_data:
-    name: idia_grafana_data
-  idia_hf_cache:
-    name: idia_hf_cache
-```
+**Ordem de inicialização.** `litellm` espera `postgres` **e** `ray-head`
+saudáveis; `open-webui` espera `litellm` saudável. Sem a espera pelo banco,
+o LiteLLM sobe antes de o Postgres aceitar conexão e morre na primeira
+migração.
 
-Changes from Phase 2:
-- **HF cache volume:** bind mount → named volume `idia_hf_cache` (SEC-03). Read-write
-  inside the container but isolated from the host's `~/.cache/huggingface`,
-  preventing container compromise from exfiltrating host HF tokens.
-- **Health checks:** ray-head probes `/metrics` on port 8080; litellm probes
-  `/health` on port 4000 (SEC-08). LiteLLM uses `depends_on.condition:
-  service_healthy` so it starts only after ray-head is ready.
-- **Memory limits:** ray-head limited to 16 GB with an 8 GB reservation
-  (SEC-11). Both configurable via `RAY_MEMORY_LIMIT` and
-  `RAY_MEMORY_RESERVATION`.
-- **Shared memory:** `shm_size` configurable via `RAY_SHM_SIZE` env var
-  (default 4 GB) for large-model compatibility (INFRA-02).
-- **Grafana admin password:** read from `GRAFANA_ADMIN_PASSWORD` env var
-  (SEC-07). Without this, Grafana uses `admin:admin` as default credentials.
-- **Prometheus retention:** `--storage.tsdb.retention.time=15d` and
-  `--storage.tsdb.retention.size=5GB` prevent the `/prometheus` volume from
-  growing unbounded (INFRA-01).
-- **DCGM Exporter (T4.2):** added `dcgm-exporter` service with `profiles: ["gpu"]`
-  to expose NVIDIA GPU metrics (utilization, VRAM, temperature) to Prometheus.
-  Only activates with `docker compose --profile gpu up` — skipped on macOS/CI
-  where no GPU is available. Port 9400 internal only (not published).
+**Decisões que o arquivo carrega e o motivo de cada uma**
+
+- **Cache do HuggingFace em volume nomeado, montado em `/home/ray`.** Volume
+  em vez de bind mount para que um container comprometido não alcance o
+  `~/.cache/huggingface` do host, com o token dentro (SEC-03). E em
+  `/home/ray`, não `/root`, porque a imagem base do Ray roda como UID 1000,
+  que não escreve em `/root` — montar lá deixa o download falhando por
+  permissão. `HF_HOME` e `HUGGINGFACE_HUB_CACHE` acompanham o caminho.
+- **Segredos sem default silencioso.** `POSTGRES_PASSWORD` e `UI_PASSWORD`
+  usam `${VAR:?mensagem}`: sem valor no `.env`, o compose recusa subir
+  nomeando a variável, em vez de subir com senha vazia.
+- **Limites de memória.** `ray-head` em 16 GB com reserva de 8 GB (SEC-11),
+  Prometheus em 1 GB para conter o crescimento do TSDB (INFRA-01), Open WebUI
+  em 2 GB. Todos configuráveis por env var.
+- **Memória compartilhada.** `shm_size` via `RAY_SHM_SIZE` (default 4 GB),
+  necessária para modelos grandes (INFRA-02).
+- **Healthchecks em `python3 urllib`, não `curl`.** A imagem do LiteLLM não
+  traz `curl` nem `wget`. O endpoint é `/health/liveliness`, público —
+  `/health` exige autenticação quando `master_key` está definido, e usá-lo
+  reportava o serviço como unhealthy indefinidamente.
+- **Senha do Grafana por env var** (SEC-07). Sem ela o Grafana cai no
+  `admin:admin` embutido.
+- **Retenção do Prometheus** em 15 dias / 5 GB, via `command` e não pelo
+  arquivo de config, para manter o `prometheus.yml` focado em scrape.
+- **DCGM sob `profiles: ["gpu"]`**, ativado por `--profile gpu`. O `./idia`
+  detecta `nvidia-smi` e adiciona a flag sozinho, então macOS e CI pulam o
+  serviço em vez de falhar.
+
+**Volumes nomeados.** `postgres_data` guarda as chaves de todos os usuários e
+o histórico de gasto; `webui_data` guarda contas, conversas e grants;
+`idia_hf_cache` guarda os pesos; `prometheus_data` e `grafana_data`, as
+métricas e os dashboards. Nenhum tem backup automático — ver ADR-012.
 
 ### 5.5 `.env`
 
@@ -541,24 +473,30 @@ inclusion, which left the version unspecified.
 ### 5.7 Open WebUI — interface de chat
 
 O Open WebUI é a interface que os usuários do instituto abrem. Ele fala com o
-LiteLLM como um backend OpenAI-compatível qualquer.
+LiteLLM como um backend OpenAI-compatível qualquer, e é um serviço do
+`docker-compose.yml` como os demais: healthcheck, `restart: unless-stopped`,
+limite de memória, volume nomeado, e `depends_on: litellm` com
+`condition: service_healthy`. Sobe e para com o resto da stack, e aparece em
+`./idia status`.
 
-> **Ainda fora do `docker-compose.yml`.** Hoje o container é criado à mão e
-> não participa do ciclo de vida da stack — sem healthcheck, sem restart
-> automático, ausente do `./idia status`. Ver issue #11.
+O nome do container é fixo (`idia-webui`, configurável por `OWUI_CONTAINER`)
+porque o `colleague.sh` acessa o SQLite dentro dele para criar contas e
+grants. Ver ADR-013.
 
-```bash
-docker run -d --name idia-webui --network idia-server_default \
-  -p 3001:8080 -v idia_webui_data:/app/backend/data \
-  -e WEBUI_AUTH=true -e ENABLE_SIGNUP=false \
-  -e OPENAI_API_BASE_URL=http://litellm:4000/v1 \
-  -e OPENAI_API_KEY="$OWUI_DISCOVERY_KEY" \
-  ghcr.io/open-webui/open-webui:main
-```
+**A porta 3001 é publicada na rede** — a segunda e última porta externa, ao
+lado da 4000. É exceção consciente à regra "só a 4000" da §9.1: uma interface
+que ninguém alcança não serve. O que a exceção não dispensa é TLS: o Open
+WebUI não termina TLS, então em rede não confiável ele pertence atrás de um
+proxy reverso. `OWUI_PORT` permite movê-la ou prendê-la em `127.0.0.1` e
+tunelar.
 
 `OWUI_DISCOVERY_KEY` vem do `.env` e é uma virtual key dedicada — usada
 apenas para **listar** os modelos disponíveis. Ela nunca deve ser uma chave
-de usuário, e nunca deve aparecer no código (ver issue #2).
+de usuário, e nunca deve aparecer no código.
+
+`ENABLE_SIGNUP=false`: uma conta criada pelo próprio usuário não tem virtual
+key nem `access_grant`, e encontra um dropdown vazio. Contas nascem pelo
+`./idia colleague create`.
 
 **Visibilidade por tier.** Cada modelo tem uma entrada na tabela `model` com
 `base_model_id = NULL`, e cada pessoa recebe um `access_grant` por modelo
@@ -1221,6 +1159,8 @@ envolve trade-offs significativos entre múltiplas alternativas viáveis.
 
 | 2026-09-03 | Configuração de engine por modelo — (§5.3 reescrita: serve_config.yaml deixa de carregar entrada estática, os dois modos passam pelo MODEL_CONFIG_TEMPLATE); `render_config.py`: MODEL_N_DTYPE / MODEL_N_QUANTIZATION / MODEL_N_MIN_REPLICAS com fallback sem número em single-model, `enable_auto_tool_choice` incondicional, entrada incompleta em multi-model passa a ser fatal, marcador só casa na linha `llm_configs:`; ADR-011 (tool calling sem parser); `.env.example`: opções por modelo documentadas; `tests/test_engine_config.py` (15 testes). | Modelos quantizados não eram servíveis na linha principal: o template fixava `dtype: bfloat16` sem `quantization`, e sem `enable_auto_tool_choice` toda requisição do Open WebUI falhava. |
 
+| 2026-09-03 | PostgreSQL e Open WebUI no Compose — (§5.4 reescrita: a cópia embutida do docker-compose.yml dá lugar a uma tabela de serviços mais as decisões que o arquivo carrega; §5.7 Open WebUI passa a ser serviço e não mais `docker run`); `docker-compose.yml`: serviços `postgres` e `open-webui`, `DATABASE_URL`, `UI_USERNAME`/`UI_PASSWORD`, cache HF movido de /root para /home/ray com HF_HOME correspondente, volumes `postgres_data` e `webui_data`, segredos com `${VAR:?}`; `.env.example`: POSTGRES_PASSWORD, UI_USERNAME, UI_PASSWORD; ADR-012 (banco local vs RDS) e ADR-013 (interface no Compose e a exceção da porta 3001); `tests/test_stack_services.py` (20 testes); `test_security.py`: a guarda de portas passa a permitir 3001 citando o ADR. | O gateway não conseguia emitir uma única virtual key: sem banco, `/key/generate` não tinha onde persistir, e toda a premissa multiusuário da §1 era falsa. A interface de chat vivia fora do ciclo de vida da stack e não voltava depois de um reboot. |
+
 ---
 
-*Document version: 2.7 | Last updated: 2026-09-03 | Sections changed: 5.3, Structural Change History*
+*Document version: 2.8 | Last updated: 2026-09-03 | Sections changed: 5.4, 5.7, Structural Change History*
