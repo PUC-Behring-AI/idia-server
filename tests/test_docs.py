@@ -101,58 +101,53 @@ class TestArchitectureFooter:
 # ── Phase 5 — Cross-document consistency ─────────────────────────────
 
 
-README_PHASE_MARKERS: dict[str, str] = {
-    ".env.example": "Phase 2 ✓",
-    "Dockerfile.ray": "Phase 2 ✓",
-    "serve_config.yaml": "Phase 2 ✓",
-    "docker-compose.yml": "Phase 2 ✓",
-    "prometheus.yml": "Phase 4 ✓",
-}
-
-
 @pytest.mark.docs
-class TestReadmeDirectoryTree:
-    """README.md directory tree matches the real filesystem."""
+class TestDirectoryTree:
+    """The directory tree in AGENTS.md must match the filesystem.
 
-    def test_phase_markers_match_code(self, repo_root: Path) -> None:
-        """Every artefact marked ✓ in the README tree exists on disk."""
-        readme = (repo_root / "README.md").read_text(encoding="utf-8")
-        for filename, expected_marker in README_PHASE_MARKERS.items():
-            assert expected_marker in readme, (
-                f"README.md should show '{expected_marker}' for {filename}"
-            )
-            file_path = repo_root / filename
-            assert file_path.exists(), (
-                f"{filename} is marked ✓ in README but does not exist on disk"
-            )
+    The tree used to live in README.md with "Phase N ✓" markers next to each
+    file. The phases are over, and the marker recorded when an artefact was
+    born rather than what it does — so it drifted into decoration. The tree
+    belongs in the agent-facing document, and what is worth enforcing is that
+    every name in it exists.
+    """
 
-    def test_directory_listed_files_exist(self, repo_root: Path) -> None:
-        """All filenames listed in the README directory tree exist on disk."""
-        readme = (repo_root / "README.md").read_text(encoding="utf-8")
-        # Find lines that indicate files: ├── or └── followed by filename
-        tree_lines = re.findall(r'[├└]──\s+([^\s]+)', readme)
-        for entry in tree_lines:
-            # Skip entries that are directory markers (trailing /) or comments
-            if entry.endswith("/") or entry.startswith("←") or entry == "│":
+    def test_listed_files_exist(self, repo_root: Path) -> None:
+        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
+        start = agents.index("## Directory Layout")
+        end = agents.index("## ", start + 10)
+        tree = agents[start:end]
+
+        missing: list[str] = []
+        for entry in re.findall(r"[├└]──\s+(\S+)", tree):
+            name = entry.rstrip("/")
+            if not name or name.startswith("←"):
                 continue
-            # Skip known non-file entries (comments after ←)
-            if "←" in entry:
+            # Entries under a nested block are written relative to their parent;
+            # accept a match anywhere in the tree to keep the check simple and
+            # the tree readable.
+            if (repo_root / name).exists():
                 continue
-            # Check if it's a path under a subdirectory
-            file_path = repo_root / entry
-            if not file_path.exists():
-                # Adjust for different patterns: docs/ARCHITECTURE.md, etc.
-                # Some entries are just filenames, others have comments
-                actual_name = entry.split("←")[0].strip()
-                if actual_name:
-                    check_path = repo_root / actual_name
-                    if not check_path.exists():
-                        # Could be a directory reference — skip gracefully
-                        if not check_path.is_dir():
-                            pytest.skip(
-                                f"Tree entry '{entry}' does not resolve — "
-                                f"may be a comment or special entry"
-                            )
+            if list(repo_root.rglob(name)):
+                continue
+            missing.append(entry)
+
+        assert not missing, f"listed in AGENTS.md but absent from disk: {missing}"
+
+    def test_tree_has_no_phase_markers(self, repo_root: Path) -> None:
+        """Phase bookkeeping is history, not structure — it belongs in the ADRs.
+
+        Scoped to the fenced block: the prose above it explains what was
+        removed and has to name it to do so.
+        """
+        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
+        start = agents.index("## Directory Layout")
+        end = agents.index("## ", start + 10)
+        section = agents[start:end]
+        fence = section.index("```")
+        tree = section[fence : section.index("```", fence + 3)]
+        assert "Phase " not in tree, "phase markers are back in the tree"
+
 
 
 @pytest.mark.docs

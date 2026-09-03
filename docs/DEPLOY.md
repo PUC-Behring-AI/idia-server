@@ -155,7 +155,7 @@ curl --version             # qualquer versão
 ### 3.1 Clonar o repositório
 
 ```bash
-git clone https://github.com/PUC-Behring-Institute-for-AI/idia-server.git
+git clone https://github.com/PUC-Behring-AI/idia-server.git
 cd idia-server
 ```
 

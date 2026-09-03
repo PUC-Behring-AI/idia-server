@@ -1164,6 +1164,8 @@ envolve trade-offs significativos entre múltiplas alternativas viáveis.
 
 | 2026-09-03 | Defeitos do backlog — (§4.3 config do LiteLLM deixa de ser arquivo editável: `config.yaml` removido da raiz, a fonte é `_render_litellm_config()`; §5.1 layout; §5.6 orçamento de VRAM passa a contar só modelos residentes, e placeholder sem valor passa a ser fatal); `idia`: endpoint de health unificado em `/health/liveliness` e definido uma vez, `user create` delega ao `colleague.sh`; `scripts/create_user.sh` removido; `scripts/smoke_test.sh`: mesmo endpoint; testes: `TestLiteLLMConfig` e `TestTrustBoundaries` repontados para a saída gerada, `TestHealthEndpointConsistency`, `TestSingleTierVocabulary`, orçamento de VRAM reescrito por residência, `test_setup_runs` marcado por plataforma. | Fecha #6, #8, #10, #13 e #16. A suíte passa a fechar verde na máquina do mantenedor, o que é pré-requisito para armar o portão local. |
 
+| 2026-09-03 | Reorganização documental — README reduzido de 694 para ~120 linhas (porta de entrada; a operação vive no DEPLOY.md, que já a cobria em 10 seções); árvore de diretórios migrada do README para o AGENTS.md, sem os marcadores de fase, com `TestDirectoryTree` exigindo que todo nome listado exista em disco; AGENTS.md v2.0: deixa de se declarar específico do OpenCode, fases viram histórico, o portão local ganha seção própria; URL do repositório corrigida (PUC-Behring-Institute-for-AI → PUC-Behring-AI). | O README duplicava o DEPLOY.md e o ARCHITECTURE.md e descrevia um servidor que não existe mais; quem chegava não conseguia decidir em dois minutos se o projeto servia. |
+
 ---
 
-*Document version: 2.9 | Last updated: 2026-09-03 | Sections changed: 4.3, 5.1, 5.6, Structural Change History*
+*Document version: 3.0 | Last updated: 2026-09-03 | Sections changed: Structural Change History*
