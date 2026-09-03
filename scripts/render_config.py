@@ -66,16 +66,23 @@ MODEL_CONFIG_TEMPLATE = """        - model_loading_config:
             model_id: {model_id}
             model_source: {model_source}
           engine_kwargs:
-            dtype: bfloat16
+            dtype: {dtype}
             gpu_memory_utilization: {gpu_util}
-            max_model_len: {max_len}
+            max_model_len: {max_len}{quantization_line}
+            enable_auto_tool_choice: true
           deployment_config:
             health_check_period_s: 30
             health_check_timeout_s: 10
             autoscaling_config:
-              min_replicas: 0
+              min_replicas: {min_replicas}
               max_replicas: 4
               target_ongoing_requests: 64"""
+
+# ``enable_auto_tool_choice`` is unconditional: every modern client (Open WebUI,
+# Continue.dev, Aider, Cursor) sends ``tool_choice: "auto"`` on every request,
+# and vLLM rejects those outright without it. No ``tool_call_parser`` is set —
+# adding one overrode Qwen3's native chat template and killed the GPU worker
+# during ``_initialize_kv_caches``. See ADR-011.
 
 LLM_CONFIGS_MARKER = "##LLM_CONFIGS##"
 
@@ -298,12 +305,46 @@ def _escape_yaml_value(value: str) -> str:
     return value
 
 
-def _build_llm_configs(env: dict[str, str]) -> str:
-    """Build the multi-model llm_configs YAML block from env vars.
+def _engine_option(env: dict[str, str], n: int | None, suffix: str, default: str) -> str:
+    """Resolve a per-model engine option, newest-style name first.
 
-    If MODELS_COUNT > 0, generates numbered entries using MODEL N_ID/SOURCE.
-    Otherwise, returns empty string (single-model mode uses the template's
-    fallback entry).
+    Lookup order for suffix ``DTYPE`` on model 1: ``MODEL_1_DTYPE``, then
+    ``MODEL_DTYPE``, then *default*.
+
+    The unnumbered fallback matters in single-model mode: an operator who set
+    ``MODEL_ID`` and ``MODEL_1_QUANTIZATION`` (the shape .env.example used to
+    suggest) had that quantization silently dropped, because only the numbered
+    multi-model path ever read it.
+    """
+    if n is not None:
+        value = env.get(f"MODEL_{n}_{suffix}", "").strip()
+        if value:
+            return value
+    value = env.get(f"MODEL_{suffix}", "").strip()
+    return value or default
+
+
+def _model_entry(env: dict[str, str], model_id: str, model_source: str, n: int | None) -> str:
+    """Render one llm_config entry from the shared template."""
+    quantization = _engine_option(env, n, "QUANTIZATION", "")
+    return MODEL_CONFIG_TEMPLATE.format(
+        model_id=model_id,
+        model_source=model_source,
+        gpu_util=env.get("GPU_MEMORY_UTILIZATION", "0.9"),
+        max_len=env.get("MAX_MODEL_LEN", "8192"),
+        dtype=_engine_option(env, n, "DTYPE", "bfloat16"),
+        quantization_line=f"\n            quantization: {quantization}" if quantization else "",
+        min_replicas=_engine_option(env, n, "MIN_REPLICAS", "0"),
+    )
+
+
+def _build_llm_configs(env: dict[str, str]) -> str:
+    """Build the llm_configs YAML block from env vars.
+
+    Both modes go through MODEL_CONFIG_TEMPLATE — single-model is just the
+    one-entry case. Keeping a separate static entry in serve_config.yaml was
+    how the two drifted apart: the template gained quantization, dtype,
+    min_replicas and tool calling, and the fallback silently kept none of them.
     """
     mc_str = env.get("MODELS_COUNT", "0")
     try:
@@ -312,26 +353,31 @@ def _build_llm_configs(env: dict[str, str]) -> str:
         models_count = 0
 
     if models_count < 1:
-        return ""  # single-model mode — keep template fallback entry
-
-    gpu_util = env.get("GPU_MEMORY_UTILIZATION", "0.9")
-    max_len = env.get("MAX_MODEL_LEN", "8192")
-    entries: list[str] = []
-
-    for n in range(1, models_count + 1):
-        model_id = env.get(f"MODEL_{n}_ID", "")
-        model_source = env.get(f"MODEL_{n}_SOURCE", "")
+        model_id = env.get("MODEL_ID", "").strip()
+        model_source = env.get("MODEL_SOURCE", "").strip()
         if not model_id or not model_source:
-            # Silently skip incomplete entries
-            continue
-        entries.append(
-            MODEL_CONFIG_TEMPLATE.format(
-                model_id=model_id,
-                model_source=model_source,
-                gpu_util=gpu_util,
-                max_len=max_len,
+            print(
+                "FATAL: single-model mode requires MODEL_ID and MODEL_SOURCE",
+                file=sys.stderr,
             )
-        )
+            sys.exit(1)
+        # n=1 so MODEL_1_* still applies — the shape .env.example suggests.
+        return _model_entry(env, model_id, model_source, n=1)
+
+    entries: list[str] = []
+    for n in range(1, models_count + 1):
+        model_id = env.get(f"MODEL_{n}_ID", "").strip()
+        model_source = env.get(f"MODEL_{n}_SOURCE", "").strip()
+        if not model_id or not model_source:
+            print(
+                f"FATAL: MODELS_COUNT={models_count} but MODEL_{n}_ID and/or "
+                f"MODEL_{n}_SOURCE is missing.\n"
+                f"  Declaring N models and defining fewer used to drop the "
+                f"incomplete ones without a word.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        entries.append(_model_entry(env, model_id, model_source, n=n))
 
     return "\n".join(entries)
 
@@ -349,40 +395,32 @@ def _substitute(raw: str, env: dict[str, str]) -> str:
     Unknown placeholders are left untouched so they produce an obvious
     error when Ray Serve tries to parse the rendered YAML.
     """
-    # Handle multi-model marker first
+    # Every mode generates its entries from MODEL_CONFIG_TEMPLATE. Any static
+    # entry left below the marker in the template is dropped — it exists only
+    # as a readable example of the shape, never as the rendered output.
     if LLM_CONFIGS_MARKER in raw:
-        mc_str = env.get("MODELS_COUNT", "0")
-        try:
-            models_count = int(mc_str) if mc_str else 0
-        except ValueError:
-            models_count = 0
-
-        if models_count > 0:
-            # Multi-model: replace marker with generated entries, skip fallback
-            generated = _build_llm_configs(env)
-            lines = raw.split("\n")
-            new_lines = []
-            skip_until_section = False
-            for line in lines:
-                if LLM_CONFIGS_MARKER in line:
-                    # Keep the llm_configs: key, replace marker with content
-                    prefix = line.split(LLM_CONFIGS_MARKER)[0]
-                    new_lines.append(f"{prefix}\n{generated}")
-                    skip_until_section = True
-                    continue
-                if skip_until_section:
-                    # Skip fallback entry lines (indented >= 4 spaces)
-                    # Stop when reaching a line at 0-2 space indent (new section)
-                    indent = len(line) - len(line.lstrip())
-                    if indent <= 2 and line.strip():
-                        skip_until_section = False
-                        new_lines.append(line)
-                    continue
-                new_lines.append(line)
-            raw = "\n".join(new_lines)
-        else:
-            # Single-model: just remove the marker, keep fallback entry
-            raw = raw.replace(LLM_CONFIGS_MARKER, "")
+        generated = _build_llm_configs(env)
+        new_lines: list[str] = []
+        dropping = False
+        for line in raw.split("\n"):
+            # Require the marker to sit on the llm_configs: key itself. Matching
+            # it anywhere would also fire inside a comment that merely names it,
+            # splicing YAML into the middle of the file.
+            if LLM_CONFIGS_MARKER in line and line.lstrip().startswith("llm_configs:"):
+                prefix = line.split(LLM_CONFIGS_MARKER)[0]
+                new_lines.append(f"{prefix}\n{generated}")
+                dropping = True
+                continue
+            if dropping:
+                # Example entries are indented under llm_configs:. A line at
+                # 0-2 spaces of indent starts a new top-level section.
+                indent = len(line) - len(line.lstrip())
+                if indent <= 2 and line.strip():
+                    dropping = False
+                    new_lines.append(line)
+                continue
+            new_lines.append(line)
+        raw = "\n".join(new_lines)
 
     def _replacer(match: re.Match) -> str:
         name = match.group(1)

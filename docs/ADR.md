@@ -318,3 +318,43 @@ resíduo; + testável sem Docker e sem servidor (`--dry-run`, `tiers`);
 − manipulação direta do SQLite do Open WebUI (ver ADR-009);
 − dois caminhos de criação de usuário convivem enquanto `create_user.sh`
 existir — ver issue #6]
+
+---
+
+## ADR-011: Tool calling via `enable_auto_tool_choice`, sem `tool_call_parser`
+**Data:** 2026-09-03 | **Fase:** Configuração de engine | **Status:** Accepted
+
+**Contexto:** Toda interface moderna — Open WebUI, Continue.dev, Aider,
+Cursor — manda `tool_choice: "auto"` junto de `tools: [...]` em cada
+requisição, mesmo quando a conversa não usa ferramenta nenhuma. O vLLM
+recusa esses pedidos de saída:
+
+```
+auto tool choice requires --enable-auto-tool-choice and
+--tool-call-parser to be set
+```
+
+Ou seja: sem isso, a interface web do instituto não conversa. Não é um
+recurso avançado que fica faltando — é a requisição comum que falha.
+
+A leitura literal da mensagem levou a adicionar os dois: `enable_auto_tool_choice`
+**e** `tool_call_parser: "hermes"`. O resultado foi pior que o erro original —
+o GPU worker morria durante `_initialize_kv_caches`, nos cinco modelos Qwen3
+testados. A investigação mostrou por quê: o Qwen3 traz chat template próprio,
+com tags `<tool_call>` nativas. O parser "hermes" sobrescrevia esse template e
+os dois entravam em conflito.
+
+**Decisão:** `enable_auto_tool_choice: true` em toda entrada gerada, e
+**nenhum** `tool_call_parser`. O vLLM usa o chat template nativo do modelo.
+
+A opção é incondicional no `MODEL_CONFIG_TEMPLATE`, não configurável por
+modelo: um servidor cujo tool calling depende de o operador lembrar de ligar
+uma flag é um servidor que vai chegar quebrado na mão do usuário.
+
+**Alternativa descartada:** `tool_call_parser: "hermes"` para todos os
+modelos. Derrubou o worker em 100% dos casos testados.
+
+**Consequências:** [+ compatibilidade com qualquer cliente OpenAI sem
+configuração; + sem conflito com templates nativos; − exige que o modelo
+tenha chat template com suporte a tools — Qwen3 e Mistral Instruct têm;
+um modelo sem isso aceitaria o parâmetro e ignoraria as ferramentas]
