@@ -73,7 +73,15 @@ idia-server/
 │   ├── test_colleague.py       ← provisionamento, tiers, guardas de injeção
 │   ├── test_security.py        ← portas, pinning, fronteiras de confiança
 │   ├── test_contract.py        ← contratos REST do LiteLLM, sem GPU
-│   └── test_deploy_dry_run.py  ← dry-run, CLI, consistência do health check
+│   ├── test_deploy_dry_run.py  ← dry-run, CLI, consistência do health check
+│   └── bats/                   ← suíte de shell (bats)
+│       ├── colleague_create.bats    ← provisionamento contra LiteLLM falso
+│       ├── colleague_lifecycle.bats ← status, revoke, tiers
+│       ├── idia_cli.bats            ← roteamento, deploy, status, user, logs
+│       └── helpers/
+│           ├── common.bash          ← setup: servidor falso, .env, stubs no PATH
+│           ├── fake_litellm.py      ← LiteLLM de mentira, com estado real
+│           └── bin/docker           ← `docker` de mentira, que grava o que foi pedido
 └── docs/
     ├── ARCHITECTURE.md         ← documento vivo de arquitetura
     ├── DEPLOY.md               ← guia de operação
@@ -412,7 +420,54 @@ inteira quando esquecidas:
 A cobertura mede só o Python, que é **um terço** do código executável deste
 repositório — `idia`, `colleague.sh` e `setup_environment.sh` somam mais
 linhas que `render_config.py`. Um relatório de 100% não afirma nada sobre
-eles; o harness de shell é peça separada.
+eles. O shell tem suíte funcional própria (`tests/bats/`), e **não** tem
+número de cobertura: medir linha de shell exige `kcov` ou `bashcov`, nenhum
+instalado, e instalar ferramenta na máquina de alguém é decisão de quem opera.
+Então o que existe sobre o shell é "88 testes exercitam estes caminhos", não
+"N% das linhas foi executada" — e as duas frases não são a mesma.
+
+### A suíte de shell (bats)
+
+`bats tests/bats` — 88 testes, sem Docker, sem GPU, sem servidor no ar.
+
+`tests/test_colleague.py` já cobre o que para antes da rede: `--help`,
+`tiers`, `--dry-run` e as guardas de injeção. A suíte bats cobre a outra
+metade — **as requisições que os scripts de fato enviam** — que é onde
+nasceram os defeitos de produção: o servidor não emitia uma única virtual
+key, e nenhum teste podia notar, porque nenhum teste pedia uma.
+
+Como ela consegue rodar sem infraestrutura:
+
+- **`helpers/fake_litellm.py` é um servidor HTTP de verdade**, não um `curl`
+  stubado. Precisa ser: `colleague.sh` chega ao LiteLLM por dois caminhos —
+  `curl` em `_litellm_api` e `urllib` no Python embutido de
+  `_litellm_delete_keys_by_alias` — e stubar `curl` deixa o segundo sem
+  teste. O segundo é o que morre primeiro quando o proxy está fora.
+- **Ele guarda estado real.** Uma key criada por `/key/generate` aparece em
+  `/key/list`, é descrita por `/key/info` e é removida por `/key/delete`.
+  É isso que torna o passo "limpar as keys anteriores deste alias"
+  verificável: com resposta canned, a contagem é a que o falso decidiu, não
+  a que o script calculou.
+- **`helpers/bin/docker` grava o que foi pedido** e responde os poucos
+  subcomandos usados. As asserções são sobre a linha de comando que o script
+  *montaria* — é ali que os defeitos moram (um serviço que falta, uma flag de
+  profile que nunca é passada).
+- **`./idia` roda a partir de uma cópia temporária do repositório.**
+  `colleague.sh` tem a costura para isso (`IDIA_ENV_FILE`); `./idia` não —
+  fixa `ENV_FILE="$REPO_DIR/.env"`. Os scripts são **copiados, não
+  linkados**: `render_config.py` deriva a raiz de
+  `Path(__file__).resolve().parent`, e `resolve()` segue o link de volta ao
+  checkout real, que é onde o `--render-all` escreveria.
+
+As asserções são sobre o **payload parseado** que chega ao `/key/generate`,
+não sobre as palavras no terminal. Um tier cujos limites são impressos certo
+e enviados nulos é exatamente a falha que isso pega: quem opera lê
+"300 req/min", quem usa recebe ilimitado, e as duas telas concordam.
+
+Dois testes são de **caracterização**, não endosso — fixam o comportamento
+defeituoso que existe hoje, com a issue anotada no corpo, para que a correção
+faça o teste virar. Estão rotulados como tal; um teste que finge aprovar um
+defeito sem dizer que é um defeito é pior que a ausência dele.
 
 ### Como executar
 
@@ -443,6 +498,12 @@ pytest --cov --cov-branch --cov-fail-under=95
 
 # Ver quais linhas e ramos faltam
 pytest --cov --cov-branch --cov-report=term-missing
+
+# A suíte de shell (brew install bats-core)
+bats tests/bats
+
+# Um arquivo só, com a saída de cada teste que falhar
+bats tests/bats/colleague_create.bats --verbose-run
 ```
 
 ### O que cada teste valida
@@ -563,6 +624,16 @@ Isso permite que a suíte rode limpa desde a Fase 1.
    é mais rápido, alcança os caminhos de erro, e um `subprocess` que recebe
    ambiente limpo (`env={"PATH": ...}`) não é medido, porque isso apaga a
    variável que instrumenta o filho.
+9. **Comportamento de shell vai para `tests/bats/`, não para um
+   `subprocess.run` em Python.** Se o caminho novo fala com o LiteLLM ou com
+   o Docker, os helpers já existem: `start_litellm`, `write_env`,
+   `make_fake_repo`, `stub_path`. Adicionar um endpoint ao
+   `helpers/fake_litellm.py` é preferível a stubar `curl` — o script tem
+   caminhos que usam `urllib`, e esses o stub de `curl` não vê.
+10. **Um teste que fixa comportamento defeituoso diz que é defeituoso.** No
+    corpo, o que está errado e a issue que rastreia. Sem isso ele é
+    indistinguível de um teste que endossa o defeito, e a correção parece
+    uma regressão.
 
 ---
 

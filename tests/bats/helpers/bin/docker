@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# A stand-in `docker`, enough of one to drive colleague.sh and ./idia.
+#
+# Placed first on PATH by tests/bats/helpers/common.bash. It records every
+# invocation so a test can assert on what the script *would* have run, and
+# answers the handful of subcommands the scripts actually use.
+#
+# What it deliberately does NOT do: execute the Python that colleague.sh pipes
+# into `docker exec`. That code opens /app/backend/data/webui.db inside the
+# container, a path this harness cannot create without root, so the SQLite
+# half of Open WebUI provisioning stays unexercised. The stub returns a
+# plausible user id and the test asserts on the script's handling of it — not
+# on the SQL. Making that path testable needs the db path to become an env
+# var in colleague.sh, which is a change to the script, not to the tests.
+#
+# Behaviour knobs (all optional):
+#   FAKE_DOCKER_LOG         file to append one line per invocation
+#   FAKE_DOCKER_CONTAINERS  colon-separated names that `inspect` finds
+#   FAKE_OWUI_USER_ID       what `exec` prints (empty string is a valid test)
+#   FAKE_DOCKER_FAIL        subcommand that must exit non-zero (e.g. "exec")
+
+set -uo pipefail
+
+if [ -n "${FAKE_DOCKER_LOG:-}" ]; then
+    printf '%s\n' "$*" >>"$FAKE_DOCKER_LOG"
+fi
+
+sub="${1:-}"
+
+if [ -n "${FAKE_DOCKER_FAIL:-}" ] && [ "$sub" = "$FAKE_DOCKER_FAIL" ]; then
+    echo "fake docker: '$sub' failed on purpose" >&2
+    exit 1
+fi
+
+case "$sub" in
+    inspect)
+        # `docker inspect NAME` — the last argument is the container name.
+        name="${*: -1}"
+        case ":${FAKE_DOCKER_CONTAINERS:-}:" in
+            *":${name}:"*) echo "[{\"Name\": \"/${name}\"}]"; exit 0 ;;
+            *) echo "Error: No such object: ${name}" >&2; exit 1 ;;
+        esac
+        ;;
+    exec)
+        # colleague.sh pipes a Python program in on stdin. Drain it so the
+        # writer never blocks on a full pipe, then answer.
+        cat >/dev/null 2>&1 || true
+        if [ "${FAKE_OWUI_USER_ID+set}" = "set" ]; then
+            printf '%s\n' "$FAKE_OWUI_USER_ID"
+        else
+            printf '%s\n' "11111111-2222-3333-4444-555555555555"
+        fi
+        exit 0
+        ;;
+    compose)
+        # ./idia deploy/status/logs/stop shell out to `docker compose`.
+        # Answering 0 without doing anything is the point: the test asserts on
+        # the recorded command line, which is where the defects live (a
+        # missing service, a profile flag that never gets passed).
+        exit 0
+        ;;
+    ps)
+        echo "NAMES"
+        exit 0
+        ;;
+    info|version)
+        echo "fake docker"
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
