@@ -11,6 +11,21 @@ dependencies = [
 ]
 dynamic = ["version"]
 
+[project.optional-dependencies]
+# What the local gate needs. Without this list the gate's own dependencies live
+# only in whoever's shell ran it last, and `scripts/gate.sh` skips silently the
+# step whose tool is absent — a green gate that checked less than it printed.
+#
+# Caveat worth knowing before trusting it: `pip install -e '.[dev]'` is refused
+# on Python 3.13, because requires-python above stops at <3.13 for the runtime
+# (Ray/vLLM) while the suite itself runs clean on 3.13.9. Until that split is
+# resolved, install the three by name — AGENTS.md carries the command.
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+]
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
@@ -20,6 +35,32 @@ markers = [
     "config: configuration file schema validation tests",
     "integration: tests that require Docker/Compose (skip by default)",
     "security: tests that verify security constraints",
+]
+
+[tool.coverage.run]
+source = ["scripts"]
+# `branch` is NOT set here on purpose. Part of the suite runs render_config.py
+# as a subprocess, and pytest-cov builds the subprocess config from its own
+# flags rather than from this table. Setting branch on one side only makes the
+# two data files unmergeable ("Can't combine statement coverage data with
+# branch data") and the whole run ends in INTERNALERROR. The gate passes
+# --cov-branch instead, which reaches both sides.
+
+[tool.coverage.report]
+# The 95% floor lives in `scripts/gate.sh` as --cov-fail-under, NOT here.
+# Set in this table it applies to every --cov invocation, so running one file
+# (`pytest --cov tests/test_docs.py`) reports 0% and exits non-zero with all
+# its tests green — a red result that says nothing true about the change.
+# The gate is mandatory before `gh pr create`, so the floor is enforced either
+# way; putting it here only breaks the subset run a developer uses to debug.
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    # Unreachable in-process: importing the module to test it is precisely
+    # what makes __name__ != "__main__". Covered instead by the CLI tests in
+    # tests/test_engine_config.py, which run the script as a subprocess.
+    'if __name__ == .__main__.:',
 ]
 
 [tool.ruff]

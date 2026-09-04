@@ -12,6 +12,11 @@ build/
 *.whl
 .pytest_cache/
 .coverage
+# Per-process data files: pytest-cov measures the subprocesses the suite spawns
+# and writes one .coverage.<host>.<pid>.<rand> per child before combining them.
+# A crashed run leaves them behind, and a leftover file from a statement-only
+# run makes the next branch-mode run fail to combine.
+.coverage.*
 coverage/
 htmlcov/
 .tmp/

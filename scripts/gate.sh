@@ -36,9 +36,28 @@ _skip() { echo "${YELLOW}[pulado]${RESET} $*"; }
 
 # ── 1. Suíte de testes ──────────────────────────────────────────────────────
 
-_step "pytest"
-python3 -m pytest -q || _fail "a suíte não passou"
-_ok "suíte verde"
+_step "pytest + cobertura"
+
+# Dados de uma execução anterior interrompida quebram a combinação desta:
+# um `.coverage.<pid>` gravado em modo statement não se junta a um em modo
+# branch, e o pytest termina em INTERNALERROR sem dizer que o culpado está
+# no diretório.
+rm -f .coverage .coverage.*
+
+# O piso de cobertura não é opcional: pular esta etapa quando a ferramenta
+# falta é aprovar um PR sem ter medido nada. `pip install -e '.[dev]'`.
+if ! python3 -c 'import pytest_cov' &>/dev/null; then
+    _fail "pytest-cov não instalado — o piso de 95% não pode ser verificado.
+       Instale com: pip install -e '.[dev]'"
+fi
+
+# --cov-branch precisa vir da linha de comando, não do pyproject: o pytest-cov
+# monta a configuração dos subprocessos a partir das próprias flags, e parte da
+# suíte roda render_config.py como subprocesso. Ligar branch só de um lado
+# torna os dois arquivos de dados incombináveis.
+python3 -m pytest -q --cov --cov-branch --cov-fail-under=95 \
+    || _fail "a suíte não passou ou a cobertura ficou abaixo de 95%"
+_ok "suíte verde e cobertura >= 95%"
 
 # ── 2. Sintaxe dos scripts shell ────────────────────────────────────────────
 
@@ -70,6 +89,7 @@ if python3 -m ruff --version &>/dev/null; then
     python3 -m ruff check scripts/render_config.py \
         tests/test_colleague.py \
         tests/test_engine_config.py \
+        tests/test_render_config_units.py \
         tests/test_stack_services.py \
         || _fail "ruff apontou erros"
     _ok "ruff limpo nos arquivos mantidos"
