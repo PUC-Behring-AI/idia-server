@@ -114,35 +114,104 @@ class TestPortIsolation:
                         )
 
 
+# Tags whose meaning changes without the reference changing: the same string
+# resolves to a different image after any upstream push. Checking for the
+# literal ":latest" only caught one member of this family, and ":main" — the
+# tag Open WebUI actually shipped on — walked underneath it.
+MOVING_TAGS = frozenset(
+    {"latest", "main", "master", "dev", "develop", "edge", "nightly"}
+)
+
+# Services whose *internal* schema our own code reads. A tag pin is not enough
+# here: a rebuild of the same tag can migrate the database under the
+# provisioning writes. Digest is the only reference that cannot move (ADR-009).
+DIGEST_REQUIRED_SERVICES = frozenset({"open-webui"})
+
+
+def _image_tag(image: str) -> str | None:
+    """Return the tag of an image reference, or None when pinned by digest.
+
+    The ``:`` in a registry port (``host:5000/img``) is not a tag separator,
+    so the search happens only after the last ``/``. An omitted tag is
+    ``latest`` by Docker's own default, which is the one case where the
+    dangerous reference contains no ``:`` at all.
+    """
+    if "@" in image:
+        return None
+    last_segment = image.rsplit("/", 1)[-1]
+    if ":" not in last_segment:
+        return "latest"
+    return last_segment.rsplit(":", 1)[-1]
+
+
 @pytest.mark.security
 class TestImagePinning:
-    """All container images are pinned to immutable tags.
+    """All container images are pinned to immutable references.
 
-    See ARCHITECTURE.md §9.1.
+    See ARCHITECTURE.md §9.1 and ADR-009.
     """
 
-    def test_dockerfile_no_latest(self, repo_root: Path) -> None:
-        """Dockerfile.ray uses a pinned base image, not :latest."""
+    def test_dockerfile_base_image_is_not_on_a_moving_tag(
+        self, repo_root: Path
+    ) -> None:
+        """Every FROM in Dockerfile.ray names an immutable reference."""
         path = repo_root / "Dockerfile.ray"
         if not path.exists():
             pytest.skip("Dockerfile.ray not created yet")
-        content = path.read_text(encoding="utf-8")
-        assert ":latest" not in content, (
-            "Dockerfile.ray uses :latest — all images must be pinned (§9.1)"
+        froms = re.findall(
+            r"^\s*FROM\s+(\S+)", path.read_text(encoding="utf-8"), re.MULTILINE
         )
+        assert froms, "Dockerfile.ray declares no FROM"
+        for image in froms:
+            tag = _image_tag(image)
+            assert tag not in MOVING_TAGS, (
+                f"Dockerfile.ray builds FROM '{image}', whose tag ':{tag}' moves "
+                f"— pin it to a digest or an immutable tag (§9.1)"
+            )
 
-    def test_compose_no_latest(self, repo_root: Path) -> None:
-        """No service in docker-compose.yml uses :latest."""
+    def test_compose_images_are_not_on_moving_tags(self, repo_root: Path) -> None:
+        """No service in docker-compose.yml rides a tag that can be rewritten."""
         path = repo_root / "docker-compose.yml"
         if not path.exists():
             pytest.skip("docker-compose.yml not created yet")
         compose = yaml.safe_load(path.read_text(encoding="utf-8"))
         for svc_name, svc in compose.get("services", {}).items():
-            image = svc.get("image", "")
-            if image:  # skip services that build locally
-                assert ":latest" not in str(image), (
-                    f"Service '{svc_name}' uses :latest (§9.1)"
-                )
+            image = str(svc.get("image", ""))
+            if not image:  # services that build locally
+                continue
+            tag = _image_tag(image)
+            assert tag not in MOVING_TAGS, (
+                f"Service '{svc_name}' uses '{image}', whose tag ':{tag}' moves "
+                f"— the same reference resolves to a different image after any "
+                f"upstream push (§9.1)"
+            )
+
+    def test_services_we_reach_into_are_pinned_by_digest(
+        self, repo_root: Path
+    ) -> None:
+        """Open WebUI is pinned by digest, not merely by tag.
+
+        ``scripts/colleague.sh`` writes into this container's SQLite tables. A
+        tag rebuild that migrates the schema breaks provisioning halfway: the
+        LiteLLM key is already issued and the account is not created, leaving an
+        orphan for the operator to clean by hand (ADR-009).
+        """
+        path = repo_root / "docker-compose.yml"
+        if not path.exists():
+            pytest.skip("docker-compose.yml not created yet")
+        compose = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for svc_name in DIGEST_REQUIRED_SERVICES:
+            svc = compose.get("services", {}).get(svc_name)
+            assert svc is not None, (
+                f"Service '{svc_name}' is gone from docker-compose.yml — if it "
+                f"was renamed, update DIGEST_REQUIRED_SERVICES with it"
+            )
+            image = str(svc.get("image", ""))
+            assert "@sha256:" in image, (
+                f"Service '{svc_name}' is '{image}', pinned by tag at best. Our "
+                f"code depends on its internal schema, so it must be pinned by "
+                f"digest — see ADR-009"
+            )
 
 
 @pytest.mark.security

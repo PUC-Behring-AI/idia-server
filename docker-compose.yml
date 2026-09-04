@@ -164,7 +164,18 @@ services:
   # container's SQLite to create accounts and model access grants (ADR-009),
   # and a renamed container breaks provisioning.
   open-webui:
-    image: ghcr.io/open-webui/open-webui:main
+    # Pinned by digest, and deliberately without a tag: the only tag upstream
+    # publishes for this image is ':main', which moves on every push. Since
+    # colleague.sh writes into this container's SQLite schema, a silent image
+    # swap breaks provisioning halfway (ADR-009).
+    #
+    # This is the build the provisioning was written and verified against:
+    #   built    2026-07-01, upstream commit ecd48e2f718220a6400ecf49eafd4867a38feb10
+    #   platforms  linux/amd64 + linux/arm64 (OCI index — safe on the g5 and on a dev Mac)
+    #
+    # Bumping it is a decision, not an accident: read ADR-009 first, then
+    # re-verify the tables colleague.sh touches before changing this line.
+    image: ghcr.io/open-webui/open-webui@sha256:a26effeb220e132482bf7e0560b3404843e7bc40d23051144e062960df8df6b0
     container_name: ${OWUI_CONTAINER:-idia-webui}
     depends_on:
       litellm:

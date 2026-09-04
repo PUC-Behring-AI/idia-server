@@ -263,7 +263,39 @@ descobre a restrição só quando a requisição falha.
 **Consequências:** [+ dropdown mostra apenas o que a pessoa pode usar;
 + grants gerenciados automaticamente, sem passo manual; + revoke limpa tudo,
 sem lixo acumulado; − dependência do schema interno do SQLite do Open WebUI,
-que pode mudar entre versões — o teste de provisionamento é o que detecta]
+que pode mudar entre versões — mitigado pelo pin por digest, ver a nota abaixo]
+
+**Nota de 2026-09-04 — a versão contra a qual este ADR foi verificado.**
+
+A decisão acima descreve o schema de uma versão específica do Open WebUI, e
+até esta data o `docker-compose.yml` puxava a imagem da tag `:main`. Uma tag
+que se move não é uma versão: qualquer push upstream trocava o schema por
+baixo do provisionamento, e o `create` falharia no meio — chave já emitida no
+LiteLLM, conta não criada, artefato órfão para limpar à mão.
+
+Que a deriva era real, e não hipótese, foi medido no dia: a imagem local com
+que o provisionamento foi escrito é `sha256:a26effeb…`, de 2026-07-01, e a
+tag `:main` no registry já apontava para `sha256:8afd2d77…`. Um
+`docker compose pull` teria trocado a imagem.
+
+A imagem passa a ser referenciada por digest, sem tag:
+
+| | |
+|---|---|
+| digest | `sha256:a26effeb220e132482bf7e0560b3404843e7bc40d23051144e062960df8df6b0` |
+| build | 2026-07-01, commit upstream `ecd48e2f718220a6400ecf49eafd4867a38feb10` |
+| plataformas | índice OCI com `linux/amd64` e `linux/arm64` |
+| tabelas verificadas | `user`, `auth`, `api_key`, `access_grant`, `model`, `config` |
+
+**Atualizar a imagem passa a ser uma decisão**, e ela pede três coisas: reler
+este ADR, reverificar as seis tabelas contra a nova versão, e trocar o digest
+com o novo commit registrado aqui.
+
+Uma correção de fato à consequência original, que dizia que "o teste de
+provisionamento é o que detecta" uma mudança de schema: **não detecta.** O
+teste dirige o provisionamento contra um Open WebUI simulado, que concorda com
+o script por construção — nenhum teste hoje lê o schema real (#37). Enquanto
+esse teste não existir, o pin é a única proteção, não a segunda.
 
 ---
 

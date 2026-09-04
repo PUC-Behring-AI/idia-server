@@ -565,8 +565,9 @@ Cada classe de teste valida a estrutura de um arquivo de configuração contra a
 | `TestPortIsolation.test_ray_ingress_not_published` | Porta 8000 NÃO está em `ports:` |
 | `TestPortIsolation.test_dashboard_not_published` | Porta 8265 NÃO está em `ports:` |
 | `TestPortIsolation.test_ray_client_not_published` | Porta 10001 NÃO está em `ports:` |
-| `TestImagePinning.test_dockerfile_no_latest` | Dockerfile.ray não usa `:latest` |
-| `TestImagePinning.test_compose_no_latest` | Nenhum serviço no Compose usa `:latest` |
+| `TestImagePinning.test_dockerfile_base_image_is_not_on_a_moving_tag` | Nenhum `FROM` do Dockerfile.ray usa tag móvel (`latest`, `main`, `master`, `dev`, `develop`, `edge`, `nightly`, ou tag omitida) |
+| `TestImagePinning.test_compose_images_are_not_on_moving_tags` | Nenhum serviço no Compose usa tag móvel |
+| `TestImagePinning.test_services_we_reach_into_are_pinned_by_digest` | Open WebUI pinado por `@sha256:` — nosso código depende do schema interno dele (ADR-009) |
 | `TestTrustBoundaries.test_generated_config_never_embeds_the_master_key` | o config renderizado nunca contém o valor real da master key |
 | `TestDashboardBinding.test_dashboard_host_set_to_localhost` | serve_config.yaml http_options.host=0.0.0.0 (proxy interno)
 | `TestMonitoringPortIsolation.test_prometheus_port_not_published` | Porta 9090 (Prometheus) não está em `ports:` no Compose
