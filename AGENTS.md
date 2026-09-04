@@ -67,6 +67,7 @@ idia-server/
 │   ├── test_docs.py            ← estrutura da documentação e da árvore
 │   ├── test_config_schemas.py  ← schema dos configs e do gerado pelo LiteLLM
 │   ├── test_integration.py     ← render, multi-model, orçamento de VRAM
+│   ├── test_render_config_units.py ← unidade in-process: caminhos de erro e main()
 │   ├── test_engine_config.py   ← dtype, quantização, residência, tool calling
 │   ├── test_stack_services.py  ← topologia do Compose, portas, banco
 │   ├── test_colleague.py       ← provisionamento, tiers, guardas de injeção
@@ -388,12 +389,41 @@ cada uma com seu marcador e requisitos de infraestrutura.
 | `security` | Segurança | Isolamento de portas (`:8000`, `:8265`, `:10001` inacessíveis externamente; apenas `:4000` externa; `:9090` não publicada; `:3000` bound a localhost), pin de imagens (`no :latest`), fronteiras de confiança (master_key declarado), binding do dashboard | Verificação de YAML: apenas pytest; verificação de rede: Docker | 2 |
 | (none) | Contrato LiteLLM | Simulação de API LiteLLM: rejeição de modelo inexistente, auth ausente, mensagens inválidas, formato de resposta | Não — puro Python com mock | 5 (Tier 4) |
 | `deploy` | Dry-run + CLI | Validação de render_config.py, esquema .env, CLI unificada | Não — puro Python + shell | Post-5 |
+| (none) | Unidade in-process | `render_config.py` chamado como função, não como subprocesso: cada caminho de erro, cada ramo de validação e o `main()` nos três modos | Não — puro Python | Post-5 |
+
+### Cobertura
+
+O portão exige **95% de statement e de ramo** em `scripts/render_config.py`
+(hoje em 100%). O piso mora em `scripts/gate.sh` como `--cov-fail-under=95`,
+não no `pyproject.toml`: nessa tabela ele valeria para toda invocação com
+`--cov`, e rodar um arquivo só devolveria "FAIL 0%" com os testes verdes.
+
+Duas restrições da ferramenta que não são óbvias e custam uma execução
+inteira quando esquecidas:
+
+- **`--cov-branch` vem da linha de comando, nunca de `[tool.coverage.run]`.**
+  Parte da suíte roda `render_config.py` como subprocesso, e o `pytest-cov`
+  monta a configuração do filho a partir das próprias flags. Ligar `branch`
+  só no `pyproject` faz um lado medir ramo e o outro linha, e o run termina
+  em `INTERNALERROR: Can't combine statement coverage data with branch data`.
+- **Um `.coverage.*` de execução interrompida quebra a próxima.** O gate
+  apaga antes de rodar; à mão, `rm -f .coverage .coverage.*`.
+
+A cobertura mede só o Python, que é **um terço** do código executável deste
+repositório — `idia`, `colleague.sh` e `setup_environment.sh` somam mais
+linhas que `render_config.py`. Um relatório de 100% não afirma nada sobre
+eles; o harness de shell é peça separada.
 
 ### Como executar
 
 ```bash
 # Instalar dependências de teste
-pip install pytest pyyaml
+pip install pytest pytest-cov ruff pyyaml
+
+# O extra equivalente existe, mas `pip install -e '.[dev]'` é recusado em
+# Python 3.13: `requires-python` do projeto trava em `<3.13` por causa do
+# runtime (Ray/vLLM), enquanto a suíte roda limpa em 3.13.9. Os dois
+# ambientes não são o mesmo e a metadata só descreve um.
 
 # Rodar testes rápidos (docs + config) — zero infraestrutura
 pytest -m "docs or config" -v
@@ -406,6 +436,13 @@ pytest tests/test_config_schemas.py -v
 
 # Rodar por marcador
 pytest -m config -v
+
+# Cobertura, do jeito que o portão roda (statement + ramo, piso de 95%)
+rm -f .coverage .coverage.*
+pytest --cov --cov-branch --cov-fail-under=95
+
+# Ver quais linhas e ramos faltam
+pytest --cov --cov-branch --cov-report=term-missing
 ```
 
 ### O que cada teste valida
@@ -474,6 +511,36 @@ Cada classe de teste valida a estrutura de um arquivo de configuração contra a
 | `TestMonitoringPortIsolation.test_prometheus_port_not_published` | Porta 9090 (Prometheus) não está em `ports:` no Compose
 | `TestMonitoringPortIsolation.test_grafana_port_bound_localhost` | Porta 3000 (Grafana) bound a 127.0.0.1
 
+#### `test_render_config_units.py` (sem marcador)
+
+Chama cada função de `render_config.py` direto, sem subprocesso. É o que
+alcança os ramos que a CLI não consegue provocar — um `PermissionError`, um
+template em latin-1, o `execlp` que volta em vez de substituir o processo — e
+o que satisfaz o Axioma 7 de forma medida em vez de declarada.
+
+Cada teste de falha cobra **as duas metades do diagnóstico**: o status de
+saída e o nome da variável em `stderr`. Afirmar só o status passa igualmente
+bem no dia em que a mensagem fica em branco, e é a mensagem que diz ao
+operador o que mudar.
+
+| Classe | O que verifica |
+|-------------|---------------|
+| `TestFindTemplate` | Busca em caller/pai/avô/`/app`; ausência lista os caminhos tentados |
+| `TestReadFile` | Arquivo ausente, sem permissão e não-UTF-8, cada um com sua mensagem |
+| `TestApplyDefaults` | Defaults de opcionais; obrigatórias permanecem ausentes; o schema declara as três certas |
+| `TestEngineOption` | Numerada vence a sem número; valor só-espaço não é valor; `n=None` ignora a numerada |
+| `TestEscapeYamlValue` | `:`, `{}`, `#` e `\n` são citados e sobrevivem ao round-trip |
+| `TestValidate*` | Range e tipo de `GPU_MEMORY_UTILIZATION`, `MAX_MODEL_LEN`, `GPU_COUNT`, `GPU_VRAM_GB` |
+| `TestResidentVramBudget` | Cinco modelos scale-to-zero cabem numa GPU; dois residentes não; a mensagem nomeia quais |
+| `TestCollectEnv` | Modo único vs multi; todas as faltantes reportadas de uma vez |
+| `TestBuildLlmConfigs` | Uma entrada por modelo; declarar N e definir menos é fatal |
+| `TestSubstitute` | Marcador só na chave `llm_configs:`; exemplo estático descartado; seção top-level depois dele sobrevive |
+| `TestValidateYaml` | YAML malformado, vazio, sem `applications`, sem `llm_configs`, entrada sem identificador — com o índice que falhou |
+| `TestLogDiagnostics` | Resumo vai para `stderr`, nunca `stdout` (que carrega o YAML no `--dry-run`) |
+| `TestRenderLitellmConfig` | master_key fica como `os.environ/`; nenhum `${...}` sobrevive; os três tiers com limites distintos |
+| `TestWriteRenderedFiles` | Escreve os dois, sobrescreve render velho, diretório inválido é fatal |
+| `TestMain*` | `--dry-run` não escreve arquivo; `--render-all` escreve os dois; modo normal grava e chama `execlp`; `execlp` que retorna sai != 0 |
+
 ### Política de Skipping
 
 Testes que dependem de arquivos de fases futuras usam `pytest.skip()` com mensagem
@@ -489,15 +556,27 @@ Isso permite que a suíte rode limpa desde a Fase 1.
 4. Se o teste depende de um arquivo de fase futura, usar `pytest.skip()` se o arquivo não existir.
 5. Registrar o novo marcador em `pyproject.toml` se for nova categoria.
 6. Atualizar esta seção no AGENTS.md.
+7. Se o arquivo é mantido limpo, adicioná-lo à lista do `ruff` em
+   `scripts/gate.sh` — fora dela o lint nunca o vê.
+8. Código novo em `scripts/` nasce com teste: o portão recusa o PR abaixo de
+   95% de statement e de ramo. Preferir chamada in-process a `subprocess` —
+   é mais rápido, alcança os caminhos de erro, e um `subprocess` que recebe
+   ambiente limpo (`env={"PATH": ...}`) não é medido, porque isso apaga a
+   variável que instrumenta o filho.
 
 ---
 
 ## O portão local
 
-`./scripts/gate.sh` roda antes de abrir qualquer PR: `pytest`, `bash -n` e
-`shellcheck` em todo shell, `ruff` no Python mantido, e parse dos YAML de
-configuração. Ele grava o marcador que o `git-guard` confere — sem isso o
-hook recusa o PR que o gate acabou de aprovar.
+`./scripts/gate.sh` roda antes de abrir qualquer PR: `pytest` com piso de 95%
+de cobertura (statement e ramo), `bash -n` e `shellcheck` em todo shell,
+`ruff` no Python mantido, e parse dos YAML de configuração. Ele grava o
+marcador que o `git-guard` confere — sem isso o hook recusa o PR que o gate
+acabou de aprovar.
+
+A etapa de cobertura **falha** se o `pytest-cov` não estiver instalado, em vez
+de pular como o `shellcheck` e o `ruff` fazem. Pular um piso é aprovar um PR
+sem ter medido nada, e o gate imprimiria verde sobre isso.
 
 O caminho está em `.claude/portao`, que pertence ao repositório e não à
 máquina. `.claude/issue-vizinhas` exige a seção `### Vizinhas` no corpo de
