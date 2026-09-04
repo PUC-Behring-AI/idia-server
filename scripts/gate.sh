@@ -6,8 +6,10 @@
 # Uso:
 #   ./scripts/gate.sh
 #
-# Roda tudo que dá para rodar sem GPU, sem Docker e sem servidor no ar:
-# a suíte pytest, a sintaxe dos scripts shell, e o lint dos arquivos Python.
+# Roda tudo que dá para rodar sem GPU, sem Docker e sem servidor no ar: a
+# suíte pytest com piso de cobertura, a suíte bats do shell (contra um LiteLLM
+# falso e um `docker` de mentira), a sintaxe dos scripts shell, e o lint dos
+# arquivos Python.
 #
 # Existe para que "CI descobre" vire "CI confirma". Um PR aberto sem passar
 # por aqui transforma a esteira em ferramenta de descoberta e dobra o custo
@@ -45,10 +47,11 @@ _step "pytest + cobertura"
 rm -f .coverage .coverage.*
 
 # O piso de cobertura não é opcional: pular esta etapa quando a ferramenta
-# falta é aprovar um PR sem ter medido nada. `pip install -e '.[dev]'`.
+# falta é aprovar um PR sem ter medido nada.
 if ! python3 -c 'import pytest_cov' &>/dev/null; then
     _fail "pytest-cov não instalado — o piso de 95% não pode ser verificado.
-       Instale com: pip install -e '.[dev]'"
+       Instale com: pip install pytest pytest-cov ruff pyyaml
+       (o extra '.[dev]' existe, mas pip o recusa em Python 3.13 — ver AGENTS.md)"
 fi
 
 # --cov-branch precisa vir da linha de comando, não do pyproject: o pytest-cov
@@ -59,11 +62,33 @@ python3 -m pytest -q --cov --cov-branch --cov-fail-under=95 \
     || _fail "a suíte não passou ou a cobertura ficou abaixo de 95%"
 _ok "suíte verde e cobertura >= 95%"
 
-# ── 2. Sintaxe dos scripts shell ────────────────────────────────────────────
+# ── 2. Suíte de shell (bats) ────────────────────────────────────────────────
+# O pytest mede o Python, que é um terço do código executável daqui. Estes
+# testes cobrem a outra parte: o caminho que fala com o LiteLLM e com o
+# Docker, exercitado contra um LiteLLM falso e um `docker` de mentira.
+#
+# Falha, não pula, quando o bats falta — pela mesma razão do pytest-cov. Um
+# portão que pula a suíte do shell aprova o PR tendo verificado a metade
+# menor do repositório, e imprime verde sobre isso.
+
+_step "bats"
+if ! command -v bats &>/dev/null; then
+    _fail "bats não instalado — a suíte de shell não pode rodar.
+       Instale com: brew install bats-core"
+fi
+bats "$REPO_DIR/tests/bats" || _fail "a suíte de shell não passou"
+_ok "suíte de shell verde"
+
+# ── 3. Sintaxe dos scripts shell ────────────────────────────────────────────
 
 _step "sintaxe shell"
 shell_files=(idia)
 while IFS= read -r f; do shell_files+=("$f"); done < <(find scripts -name '*.sh' -type f | sort)
+# Os helpers do bats também são bash, e um erro de sintaxe neles reprova a
+# suíte inteira por um motivo que não tem nada a ver com o código sob teste.
+# Os arquivos .bats ficam de fora: não são bash — o bats os transforma antes
+# de executar, e `bash -n` reprova a sintaxe `@test`.
+shell_files+=(tests/bats/helpers/common.bash tests/bats/helpers/bin/docker)
 for f in "${shell_files[@]}"; do
     bash -n "$f" || _fail "erro de sintaxe em $f"
 done
@@ -79,7 +104,7 @@ else
     _skip "shellcheck não instalado (brew install shellcheck)"
 fi
 
-# ── 3. Lint Python ──────────────────────────────────────────────────────────
+# ── 4. Lint Python ──────────────────────────────────────────────────────────
 # Só os arquivos que este projeto mantém limpos. A base tem achados antigos
 # em tests/ que não vale corrigir de passagem — corrigi-los alarga todo diff
 # que passar por perto.
@@ -91,13 +116,14 @@ if python3 -m ruff --version &>/dev/null; then
         tests/test_engine_config.py \
         tests/test_render_config_units.py \
         tests/test_stack_services.py \
+        tests/bats/helpers/fake_litellm.py \
         || _fail "ruff apontou erros"
     _ok "ruff limpo nos arquivos mantidos"
 else
     _skip "ruff não instalado (pip install ruff)"
 fi
 
-# ── 4. Configs parseiam ─────────────────────────────────────────────────────
+# ── 5. Configs parseiam ─────────────────────────────────────────────────────
 
 _step "configs"
 python3 - <<'PY' || exit 1
@@ -115,7 +141,7 @@ print("  3 arquivos de configuração parseiam")
 PY
 _ok "configs válidos"
 
-# ── 5. Marca o portão ───────────────────────────────────────────────────────
+# ── 6. Marca o portão ───────────────────────────────────────────────────────
 # Sem isto o git-guard recusa o `gh pr create` que este gate acabou de aprovar.
 
 if [ -x "$HOME/.claude/hooks/git-guard.sh" ]; then
